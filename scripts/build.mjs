@@ -37,6 +37,8 @@ const shared = {
   target: "esnext",
   sourcemap: true,
   minify: true,
+  // Keep class/function names readable in stack traces and `constructor.name`.
+  keepNames: true,
 };
 
 await Promise.all([

@@ -1,0 +1,24 @@
+# Sources and build inputs (the package ships only dist/)
+src/
+scripts/
+tests/
+*.test.ts
+*.test-d.ts
+contract-tests.ts
+
+# Tooling and config
+tsconfig.json
+tsconfig.build.json
+esbuild.config.*
+bun.lock
+bun.lockb
+.git/
+.gitignore
+.github/
+
+# Outputs and caches
+node_modules/
+out/
+coverage/
+*.tgz
+*.tsbuildinfo

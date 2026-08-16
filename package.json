@@ -1,16 +1,38 @@
 {
   "name": "pipeflow",
-  "module": "./src/index.ts",
   "type": "module",
   "private": true,
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
   "exports": {
-    ".": "./src/index.ts",
-    "./providers": "./src/providers/index.ts",
-    "./persistence": "./src/persistence/index.ts",
-    "./transport": "./src/transport/index.ts"
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./providers": {
+      "types": "./dist/providers/index.d.ts",
+      "import": "./dist/providers.js"
+    },
+    "./persistence": {
+      "types": "./dist/persistence/index.d.ts",
+      "import": "./dist/persistence.js"
+    },
+    "./transport": {
+      "types": "./dist/transport/index.d.ts",
+      "import": "./dist/transport.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "bun scripts/build.mjs",
+    "prepublishOnly": "bun run build",
+    "test": "bun test",
+    "typecheck": "bunx tsc --noEmit"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "esbuild": "^0.28.2"
   },
   "peerDependencies": {
     "typescript": "^5"

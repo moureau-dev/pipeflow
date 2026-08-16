@@ -109,11 +109,45 @@ describe("DeepgramSTT", () => {
 
     stt.start({ language: "en-US" });
 
-    expect(capturedUrl).toContain("wss://api.deepgram.com/v1/listen");
-    expect(capturedUrl).toContain("model=nova-3");
+    expect(capturedUrl).toContain("wss://api.deepgram.com/v2/listen");
+    expect(capturedUrl).toContain("model=flux-general-en");
     expect(capturedUrl).toContain("token=dg-key");
     expect(capturedUrl).toContain("interim_results=true");
     expect(capturedUrl).toContain("language=en-US");
+  });
+
+  test("classic nova models still route to the v1 endpoint", () => {
+    let capturedUrl = "";
+    const stt = new DeepgramSTT({
+      apiKey: "dg-key",
+      model: "nova-3",
+      createSocket: (url) => {
+        capturedUrl = url;
+        return new FakeSocket();
+      },
+    });
+
+    stt.start();
+
+    expect(capturedUrl).toContain("wss://api.deepgram.com/v1/listen");
+    expect(capturedUrl).toContain("model=nova-3");
+  });
+
+  test("routes Flux models to the v2 listen endpoint", () => {
+    let capturedUrl = "";
+    const stt = new DeepgramSTT({
+      apiKey: "dg-key",
+      model: "flux-general-en",
+      createSocket: (url) => {
+        capturedUrl = url;
+        return new FakeSocket();
+      },
+    });
+
+    stt.start();
+
+    expect(capturedUrl).toContain("wss://api.deepgram.com/v2/listen");
+    expect(capturedUrl).toContain("model=flux-general-en");
   });
 
   test("honors explicit start options over constructor defaults", () => {

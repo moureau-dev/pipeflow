@@ -130,6 +130,80 @@ describe("KokoroTTS", () => {
     expect(headers.authorization).toBe("Bearer kokoro-key");
   });
 
+  test("requests raw streaming audio when streaming is enabled", async () => {
+    let capturedInit: RequestInit | undefined;
+    const tts = new KokoroTTS({
+      stream: true,
+      fetch: async (_url, init) => {
+        capturedInit = init;
+        return audioResponse(new Uint8Array([1]), [1]);
+      },
+    });
+
+    await collect(tts, { text: "hello", format: "pcm" });
+    const body = JSON.parse(String(capturedInit?.body));
+    expect(body.stream).toBe(true);
+    // Streaming endpoints (Together AI) only accept raw audio.
+    expect(body.response_format).toBe("raw");
+  });
+
+  test("omits the stream flag by default and passes explicit formats through", async () => {
+    let capturedInit: RequestInit | undefined;
+    const tts = new KokoroTTS({
+      fetch: async (_url, init) => {
+        capturedInit = init;
+        return audioResponse(new Uint8Array([1]), [1]);
+      },
+    });
+
+    await collect(tts, { text: "hello", format: "wav" });
+    const body = JSON.parse(String(capturedInit?.body));
+    expect(body.stream).toBeUndefined();
+    expect(body.response_format).toBe("wav");
+  });
+
+  test("decodes base64 audio deltas from Together-style SSE streams", async () => {
+    const encoder = new TextEncoder();
+    const sse =
+      `data: ${JSON.stringify({
+        type: "conversation.item.audio_output.delta",
+        delta: btoa("\x01\x02\x03\x04\x05\x06\x07\x08"),
+      })}\n\n` +
+      // Non-audio events (word timestamps) are ignored.
+      `data: ${JSON.stringify({ type: "conversation.item.word_timestamps", words: ["hi"] })}\n\n` +
+      `data: ${JSON.stringify({
+        type: "conversation.item.audio_output.delta",
+        delta: btoa("\x09"),
+      })}\n\n` +
+      "data: [DONE]\n\n";
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        // Split across two network chunks to exercise the event assembler.
+        const half = Math.ceil(sse.length / 2);
+        controller.enqueue(encoder.encode(sse.slice(0, half)));
+        controller.enqueue(encoder.encode(sse.slice(half)));
+        controller.close();
+      },
+    });
+    const tts = new KokoroTTS({
+      chunkSize: 4,
+      stream: true,
+      fetch: async () =>
+        new Response(stream, {
+          status: 200,
+          headers: { "content-type": "text/event-stream" },
+        }),
+    });
+
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of tts.stream({ text: "hello" })) {
+      chunks.push(chunk);
+    }
+    // 9 decoded bytes at chunkSize 4 → [4, 4, 1].
+    expect(chunks.map((c) => c.length)).toEqual([4, 4, 1]);
+    expect(chunks.flatMap((c) => [...c])).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+  });
+
   test("rejects empty text", async () => {
     const tts = new KokoroTTS({ fetch: async () => audioResponse(new Uint8Array(), []) });
     await expect(collect(tts, { text: "" })).rejects.toThrow(/text/);

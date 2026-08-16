@@ -15,7 +15,10 @@ export interface STTSocket {
 
 export interface DeepgramOptions extends STTOptions {
   apiKey: string;
-  /** Defaults to `wss://api.deepgram.com/v1/listen`. */
+  /**
+   * Overrides the listen endpoint. Defaults to `wss://api.deepgram.com/v2/listen`
+   * for Flux models (`flux-*`) and `wss://api.deepgram.com/v1/listen` otherwise.
+   */
   endpoint?: string;
   /** Injectable socket factory, mainly for tests. */
   createSocket?: (url: string) => STTSocket;
@@ -183,7 +186,8 @@ export class DeepgramSession implements STTSession {
 
 function buildListenUrl(options: DeepgramOptions): string {
   const params = new URLSearchParams();
-  params.set("model", options.model ?? "nova-3");
+  const model = options.model ?? "flux-general-en";
+  params.set("model", model);
   params.set("interim_results", (options.interimResults ?? true) ? "true" : "false");
   params.set("encoding", options.encoding ?? "linear16");
   params.set("sample_rate", String(options.sampleRate ?? 16000));
@@ -191,7 +195,11 @@ function buildListenUrl(options: DeepgramOptions): string {
   if (options.language) params.set("language", options.language);
   params.set("token", options.apiKey);
 
-  const base = (options.endpoint ?? "wss://api.deepgram.com/v1/listen").replace(/\/+$/, "");
+  // Flux runs on the v2 listen endpoint; classic models (nova-*) use v1.
+  const defaultEndpoint = model.startsWith("flux")
+    ? "wss://api.deepgram.com/v2/listen"
+    : "wss://api.deepgram.com/v1/listen";
+  const base = (options.endpoint ?? defaultEndpoint).replace(/\/+$/, "");
   return `${base}?${params.toString()}`;
 }
 

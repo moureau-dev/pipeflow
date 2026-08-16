@@ -1,12 +1,15 @@
 // Real-LLM latency benchmark. Requires DEEPSEEK_API_KEY (loaded from .env).
 // Runs the single-agent voice pipeline N times against the real model and
 // reports p50/p95 per latency hop. STT is faked; TTS is faked unless
-// KOKORO_URL points at a running Kokoro server, in which case the real
-// synthesis path — including inter-chunk audio gaps — is measured.
+// KOKORO_URL points at a Kokoro server, in which case the real synthesis
+// path — including inter-chunk audio gaps — is measured.
 //
 //   bun run benchmark                                        # 10 runs, fake TTS
 //   BENCH_RUNS=5 bun run benchmark                           # fewer runs
-//   KOKORO_URL=http://localhost:8880 bun run benchmark       # real Kokoro TTS
+//   KOKORO_URL=http://localhost:8880 bun run benchmark       # local kokoro-fastapi
+//   KOKORO_URL=https://api.together.ai \
+//     KOKORO_API_KEY=$TOGETHER_API_KEY \
+//     KOKORO_MODEL=hexgrad/Kokoro-82M bun run benchmark      # Together AI
 
 import { Agent } from "../src/agents/agent";
 import { Conversations } from "../src/conversations/conversations";
@@ -34,8 +37,12 @@ const PROMPT =
 
 // When set, the benchmark uses the real Kokoro adapter against this server;
 // otherwise TTS is faked (synthetic, single-chunk) and the TTS hop is
-// orchestration-only.
+// orchestration-only. KOKORO_API_KEY authenticates hosted endpoints
+// (Together AI); KOKORO_MODEL defaults to `kokoro` (local kokoro-fastapi)
+// but must be `hexgrad/Kokoro-82M` on Together AI.
 const KOKORO_URL = process.env.KOKORO_URL;
+const KOKORO_API_KEY = process.env.KOKORO_API_KEY;
+const KOKORO_MODEL = process.env.KOKORO_MODEL;
 
 // ---------------------------------------------------------------------------
 // Fakes (kept local: the e2e fakes are test-only and not exported)
@@ -109,7 +116,13 @@ function format(value: number): string {
 async function runOnce(): Promise<void> {
   const stt = new FakeSTT();
   const tts: TTS = KOKORO_URL
-    ? new KokoroTTS({ baseUrl: KOKORO_URL })
+    ? new KokoroTTS({
+        baseUrl: KOKORO_URL,
+        apiKey: KOKORO_API_KEY,
+        model: KOKORO_MODEL,
+        // The benchmark measures the realtime path: progressive synthesis.
+        stream: true,
+      })
     : new FakeTTS();
   const persistence = new MemoryPersistence();
   const api = new Conversations({ persistence, stt, tts });
@@ -173,7 +186,9 @@ async function runOnce(): Promise<void> {
   }
 }
 
-const ttsLabel = KOKORO_URL ? `kokoro (${KOKORO_URL})` : "fake";
+const ttsLabel = KOKORO_URL
+  ? `kokoro (${KOKORO_URL}${KOKORO_MODEL ? `, ${KOKORO_MODEL}` : ""})`
+  : "fake";
 console.log(`benchmark: ${RUNS} runs, model ${MODEL}, TTS: ${ttsLabel}`);
 for (let i = 0; i < RUNS; i++) {
   process.stdout.write(`  run ${i + 1}/${RUNS}…`);

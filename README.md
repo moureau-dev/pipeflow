@@ -862,12 +862,15 @@ bun run test:e2e
 The latency benchmark runs the pipeline repeatedly against the real model and
 reports p50/p95 per hop: first token, first speechable text, TTS request, TTS
 first audio, first audio delivered, and completion. STT and TTS are faked by
-default; point `KOKORO_URL` at a running Kokoro server to measure the real
-synthesis path, including inter-chunk audio gaps:
+default; point `KOKORO_URL` at a Kokoro endpoint to measure the real synthesis
+path, including inter-chunk audio gaps:
 
 ```bash
 bun run benchmark                                  # 10 runs; BENCH_RUNS=5 to change
-KOKORO_URL=http://localhost:8880 bun run benchmark # real Kokoro TTS
+KOKORO_URL=http://localhost:8880 bun run benchmark # local kokoro-fastapi
+KOKORO_URL=https://api.together.ai \
+  KOKORO_API_KEY=... KOKORO_MODEL=hexgrad/Kokoro-82M \
+  bun run benchmark                                # Together AI
 ```
 
 Build and type-check:

@@ -83,6 +83,7 @@
     "prepublishOnly": "bun run build",
     "test": "bun test",
     "test:e2e": "bun test src/e2e",
+    "benchmark": "bun scripts/benchmark.ts",
     "typecheck": "bunx tsc --noEmit"
   },
   "devDependencies": {

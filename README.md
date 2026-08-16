@@ -259,6 +259,10 @@ Interruptions can be triggered by the application — or automatically: the
 orchestrator detects when a participant starts speaking while the agent is
 responding (barge-in).
 
+`interrupt()` is a semantic guarantee: it stops the active generation and
+prevents any further generated audio from reaching the conversation (tested to
+stop audio within ~100ms). The next turn starts fresh.
+
 ```ts
 conversation.interrupt(); // stops TTS, cancels the current generation
 ```
@@ -912,6 +916,13 @@ available. Add a `DEEPSEEK_API_KEY` to `.env` (loaded automatically) and run:
 
 ```bash
 bun run test:e2e
+```
+
+The latency benchmark runs the pipeline repeatedly against the real model and
+reports p50/p95 per hop (TTFT, first TTS text, first audio, completion):
+
+```bash
+bun run benchmark        # 10 runs; BENCH_RUNS=5 to change
 ```
 
 Build and type-check:

@@ -21,6 +21,7 @@ import {
   type DelegationResult,
   type PendingFrame,
 } from "../coordination/coordination";
+import { TextChunker } from "../text-chunker";
 
 export interface OrchestratorOptions {
   conversation: Conversation;
@@ -211,7 +212,7 @@ export class Orchestrator {
   private readonly toolWaiters = new Map<string, (result: ToolCallResult) => void>();
   private generationChain: Promise<void> = Promise.resolve();
   private speechChain: Promise<void> = Promise.resolve();
-  private speechBuffer = "";
+  private readonly chunker = new TextChunker();
   private pendingTurns = 0;
   private pendingGenerations = 0;
   private audioSequence = 0;
@@ -333,7 +334,7 @@ export class Orchestrator {
     this.stopLlms();
     this.tts?.stop();
     this.cancelToolWaiters("conversation stopped");
-    this.speechBuffer = "";
+    this.chunker.clear();
     for (const unsubscribe of this.unsubscribers) unsubscribe();
     this.unsubscribers.length = 0;
     const sessions = [...this.sttSessions.values()];
@@ -482,13 +483,13 @@ export class Orchestrator {
     this.stopLlms();
     this.tts?.stop();
     this.cancelToolWaiters("interrupted");
-    this.speechBuffer = "";
+    this.chunker.clear();
   }
 
   /** Stop the current TTS playback without cancelling the generation. */
   private stopSpeech(): void {
     this.speechEpoch++;
-    this.speechBuffer = "";
+    this.chunker.clear();
     this.tts?.stop();
   }
 
@@ -1115,28 +1116,16 @@ export class Orchestrator {
     // First-token latency for the in-flight generation (agent or
     // coordination — both stream narration through here).
     this.conversation.noteTiming("firstToken");
-    this.speechBuffer += delta;
-    // Flush every complete sentence so multi-sentence deltas (and deltas
-    // that span several sentences) are spoken as separate TTS requests.
-    for (;;) {
-      let boundary = -1;
-      for (let i = 0; i < this.speechBuffer.length; i++) {
-        const ch = this.speechBuffer[i];
-        if (ch === "." || ch === "!" || ch === "?" || ch === "\n") {
-          boundary = i;
-          break;
-        }
-      }
-      if (boundary < 0) break;
-      const sentence = this.speechBuffer.slice(0, boundary + 1).trim();
-      this.speechBuffer = this.speechBuffer.slice(boundary + 1);
-      if (sentence) this.speak(sentence);
+    // The chunker turns the token stream into speakable chunks: strong
+    // sentence boundaries flush immediately, long clauses flush at soft
+    // boundaries, and nothing waits indefinitely for punctuation.
+    for (const chunk of this.chunker.push(delta)) {
+      this.speak(chunk);
     }
   }
 
   private flushSpeech(): void {
-    const rest = this.speechBuffer.trim();
-    this.speechBuffer = "";
+    const rest = this.chunker.flush();
     if (rest) this.speak(rest);
   }
 

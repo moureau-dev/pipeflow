@@ -472,23 +472,30 @@ describe("Orchestrator", () => {
       tts: slowTts,
     });
     const delivered: number[] = [];
-    harness.conversation.on("audio", (payload) =>
-      delivered.push(payload.audio.sequence),
-    );
+    let lastAudioAt = 0;
+    harness.conversation.on("audio", (payload) => {
+      delivered.push(payload.audio.sequence);
+      lastAudioAt = Date.now();
+    });
 
     harness.conversation.listen({ userId: "alice", audio: new Uint8Array([1]) });
     harness.stt.sessions[0]!.emitFinal("Tell me about the dragon.");
     // Wait until audio is actually streaming to the application.
     await waitFor(() => delivered.length > 0);
 
+    // Interrupt while many chunks are still queued in the slow TTS stream.
+    const interruptAt = Date.now();
     harness.conversation.interrupt();
     await harness.orchestrator.whenIdle();
+    await Bun.sleep(60); // let the in-flight speech chain settle
 
-    // The remaining synthesized chunks (many were still queued in the slow
-    // TTS stream) never reached the application after the interrupt.
+    // The remaining synthesized chunks never reached the application, and
+    // the last one stopped quickly: interrupt responsiveness is a first-
+    // class invariant, not an optimization.
     const deliveredAtInterrupt = delivered.length;
     await Bun.sleep(100);
     expect(delivered.length).toBe(deliveredAtInterrupt);
+    expect(lastAudioAt - interruptAt).toBeLessThan(100);
   });
 
   test("emits partial transcripts for live captions", async () => {

@@ -218,7 +218,13 @@ export class Conversation {
     this.emit("audio-in", { conversationId: this.id, userId: input.userId, audio: chunk });
   }
 
-  /** Interrupt the current agent output (stop TTS, cancel the generation). */
+  /**
+   * Stop the currently active generation and prevent any further generated
+   * audio from reaching the conversation. The orchestrator cancels the LLM
+   * and TTS streams, force-resolves pending tool calls, and discards queued
+   * audio; the next participant turn starts fresh. Interrupt responsiveness
+   * is a tested invariant — audio stops within ~100ms of this call.
+   */
   interrupt(): void {
     const cancelled = this.cancelCurrentGeneration();
     // Persist asynchronously: interruption must stay synchronous for the

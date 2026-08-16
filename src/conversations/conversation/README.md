@@ -22,6 +22,10 @@ await conversation.stop();
   separate.
 - `stop()` finalizes the session, cancels in-flight generations (including
   sub-generations), and persists the end time.
+- `interrupt()` is a semantic guarantee, not a performance hint: it stops the
+  currently active generation and prevents any further generated audio from
+  reaching the conversation (tested to stop audio within ~100ms). The next
+  turn starts fresh.
 
 ## Events
 

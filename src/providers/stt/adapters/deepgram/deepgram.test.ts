@@ -81,7 +81,11 @@ function collect(session: STTSession): {
   finals: string[];
   errors: Error[];
 } {
-  const events = { partials: [], finals: [], errors: [] as Error[] };
+  const events: { partials: string[]; finals: string[]; errors: Error[] } = {
+    partials: [],
+    finals: [],
+    errors: [],
+  };
   session.on("partial", (text) => events.partials.push(text));
   session.on("final", (text) => events.finals.push(text));
   session.on("error", (error) => events.errors.push(error));

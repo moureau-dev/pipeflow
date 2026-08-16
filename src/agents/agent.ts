@@ -9,7 +9,7 @@ import type {
 export interface AgentOptions {
   name: string;
   context?: string;
-  tools?: Tool<unknown, unknown>[];
+  tools?: Tool<never, unknown>[];
   /** LLM provider used by `run()`. Injected by `Pipeflow.agent()`. */
   llm?: LLM;
 }
@@ -51,7 +51,7 @@ export interface AgentRunResult {
 export class Agent {
   readonly name: string;
   readonly context: string;
-  private readonly toolRegistry = new Map<string, Tool<unknown, unknown>>();
+  private readonly toolRegistry = new Map<string, Tool<never, unknown>>();
   private readonly llm: LLM | undefined;
 
   constructor(options: AgentOptions) {
@@ -67,11 +67,11 @@ export class Agent {
     }
   }
 
-  get tools(): Tool<unknown, unknown>[] {
+  get tools(): Tool<never, unknown>[] {
     return [...this.toolRegistry.values()];
   }
 
-  addTool(tool: Tool<unknown, unknown>): void {
+  addTool(tool: Tool<never, unknown>): void {
     if (this.toolRegistry.has(tool.name)) {
       throw new Error(`Agent already has a tool named "${tool.name}"`);
     }
@@ -82,7 +82,7 @@ export class Agent {
     return this.toolRegistry.has(name);
   }
 
-  getTool(name: string): Tool<unknown, unknown> | undefined {
+  getTool(name: string): Tool<never, unknown> | undefined {
     return this.toolRegistry.get(name);
   }
 
@@ -202,7 +202,7 @@ export class Agent {
     }
 
     try {
-      const result = await tool.execute(args);
+      const result = await tool.execute(args as never);
       return { id: call.id, name: call.name, arguments: args, result };
     } catch (error) {
       return {

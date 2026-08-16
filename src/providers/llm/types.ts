@@ -46,7 +46,7 @@ export type LLMEvent =
  * are thrown from the generator rather than emitted.
  */
 export interface LLM {
-  stream(request: LLMRequest): AsyncIterable<LLMEvent>;
+  stream(request: LLMRequest): AsyncGenerator<LLMEvent>;
   /** Cancel the currently in-flight generation, if any. */
   stop(): void;
 }

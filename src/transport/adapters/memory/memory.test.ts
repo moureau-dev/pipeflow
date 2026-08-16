@@ -2,14 +2,14 @@ import { describe, expect, test } from "bun:test";
 import type { Message } from "../../types.ts";
 import { MemoryTransport } from "./memory.ts";
 
-function sampleMessage(overrides: Partial<Message> = {}): Message {
+function sampleMessage(overrides: Record<string, unknown> = {}): Message {
   return {
     type: "audio-in",
     conversationId: "conv-1",
     userId: "alice",
     audio: { data: new Uint8Array([1, 2, 3]), timestamp: 100, sequence: 0 },
     ...overrides,
-  };
+  } as Message;
 }
 
 describe("MemoryTransport", () => {

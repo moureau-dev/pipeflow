@@ -1,4 +1,5 @@
 import type { TTS, TTSRequest } from "../../types.ts";
+import type { FetchLike } from "../../../shared.ts";
 
 export interface KokoroOptions {
   /**
@@ -13,7 +14,7 @@ export interface KokoroOptions {
   /** Size of the audio chunks yielded from the response stream. */
   chunkSize?: number;
   /** Injectable fetch implementation, mainly for tests. */
-  fetch?: typeof fetch;
+  fetch?: FetchLike;
 }
 
 /**
@@ -27,7 +28,7 @@ export class KokoroTTS implements TTS {
   private readonly model: string;
   private readonly apiKey: string | undefined;
   private readonly chunkSize: number;
-  private readonly fetchImpl: typeof fetch;
+  private readonly fetchImpl: FetchLike;
   private abort: AbortController | null = null;
 
   constructor(options: KokoroOptions = {}) {
@@ -43,7 +44,7 @@ export class KokoroTTS implements TTS {
     this.abort?.abort();
   }
 
-  async *stream(request: TTSRequest): AsyncIterable<Uint8Array> {
+  async *stream(request: TTSRequest): AsyncGenerator<Uint8Array> {
     if (!request.text) {
       throw new Error("KokoroTTS requires request.text");
     }
@@ -78,7 +79,7 @@ export class KokoroTTS implements TTS {
       }
 
       const reader = response.body.getReader();
-      let buffer = new Uint8Array(0);
+      let buffer: Uint8Array<ArrayBuffer> = new Uint8Array(0);
 
       while (true) {
         if (controller.signal.aborted) {
@@ -104,7 +105,10 @@ export class KokoroTTS implements TTS {
   }
 }
 
-function concat(a: Uint8Array, b: Uint8Array): Uint8Array {
+function concat(
+  a: Uint8Array<ArrayBufferLike>,
+  b: Uint8Array<ArrayBufferLike>,
+): Uint8Array<ArrayBuffer> {
   const out = new Uint8Array(a.length + b.length);
   out.set(a);
   out.set(b, a.length);

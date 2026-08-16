@@ -62,7 +62,7 @@ export class DeepgramSTT implements STT {
 
 export class DeepgramSession implements STTSession {
   private readonly socket: STTSocket;
-  private readonly listeners = new Map<DeepgramEvent, Set<(arg: never) => void>>();
+  private readonly listeners = new Map<DeepgramEvent, Set<(...args: any[]) => void>>();
   private opened = false;
   private closed = false;
   private ended = false;
@@ -105,7 +105,7 @@ export class DeepgramSession implements STTSession {
     socket.addEventListener("close", () => {
       this.closed = true;
       this.resolveEnd();
-      this.emit("close", undefined);
+      this.emit("close");
     });
   }
 
@@ -138,7 +138,11 @@ export class DeepgramSession implements STTSession {
     this.socket.close();
   }
 
-  on(event: DeepgramEvent, listener: (arg: never) => void): void {
+  on(event: "partial", listener: (transcript: string) => void): void;
+  on(event: "final", listener: (transcript: string) => void): void;
+  on(event: "error", listener: (error: Error) => void): void;
+  on(event: "close", listener: () => void): void;
+  on(event: DeepgramEvent, listener: (...args: any[]) => void): void {
     let set = this.listeners.get(event);
     if (!set) {
       set = new Set();
@@ -164,11 +168,15 @@ export class DeepgramSession implements STTSession {
     this.socket.send(JSON.stringify({ type: "CloseStream" }));
   }
 
-  private emit(event: DeepgramEvent, arg: never): void {
+  private emit(event: "partial", arg: string): void;
+  private emit(event: "final", arg: string): void;
+  private emit(event: "error", arg: Error): void;
+  private emit(event: "close"): void;
+  private emit(event: DeepgramEvent, ...args: any[]): void {
     const set = this.listeners.get(event);
     if (!set) return;
     for (const listener of [...set]) {
-      listener(arg);
+      listener(...args);
     }
   }
 }
@@ -188,7 +196,11 @@ function buildListenUrl(options: DeepgramOptions): string {
 }
 
 function toArrayBuffer(audio: Uint8Array): ArrayBuffer {
-  return audio.buffer.slice(audio.byteOffset, audio.byteOffset + audio.byteLength);
+  // Copy so the view's backing buffer (possibly larger or shared) is not
+  // sent over the socket.
+  const copy = new Uint8Array(audio.byteLength);
+  copy.set(audio);
+  return copy.buffer;
 }
 
 function decodeMessage(data: unknown): string | null {

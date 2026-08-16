@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { Conversations } from "./conversations.ts";
 import { MemoryPersistence } from "../persistence/adapters/memory/memory.ts";
 import { Conversation } from "./conversation/conversation.ts";
+import { Agent } from "../agents/agent.ts";
 
 describe("Conversations", () => {
   test("create persists a conversation and returns a runtime handle", async () => {
@@ -17,8 +18,8 @@ describe("Conversations", () => {
     const persistence = new MemoryPersistence();
     const conversations = new Conversations(persistence);
 
-    const jarvis = { name: "Jarvis" } as never;
-    const conversation = await conversations.create({ agents: [jarvis as never] });
+    const jarvis = new Agent({ name: "Jarvis" });
+    const conversation = await conversations.create({ agents: [jarvis] });
 
     const record = await persistence.getConversation(conversation.id);
     expect(record?.agentNames).toEqual(["Jarvis"]);

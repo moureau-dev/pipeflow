@@ -22,7 +22,7 @@ class FakeLLM implements LLM {
   constructor(
     private readonly eventsFor: (request: LLMRequest) => LLMEvent[],
   ) {}
-  async *stream(request: LLMRequest): AsyncIterable<LLMEvent> {
+  async *stream(request: LLMRequest): AsyncGenerator<LLMEvent> {
     this.requests.push(request);
     for (const event of this.eventsFor(request)) yield event;
   }

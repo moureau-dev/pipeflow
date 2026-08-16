@@ -10,7 +10,7 @@ class FakeLLM implements LLM {
     private readonly eventsFor: (request: LLMRequest) => LLMEvent[],
   ) {}
 
-  async *stream(request: LLMRequest): AsyncIterable<LLMEvent> {
+  async *stream(request: LLMRequest): AsyncGenerator<LLMEvent> {
     this.requests.push(request);
     for (const event of this.eventsFor(request)) {
       yield event;
@@ -258,7 +258,13 @@ describe("Agent", () => {
     expect(agent.hasTool("get_weather")).toBe(true);
     expect(agent.getTool("get_weather")).toBe(getWeather);
     expect(() => agent.addTool(getWeather)).toThrow(/already has a tool/);
-    expect(() => agent.addTool({ ...getWeather })).toThrow(/already has a tool/);
+
+    const sameName = new Tool({
+      name: "get_weather",
+      description: "A different tool with the same name.",
+      execute: () => "rainy",
+    });
+    expect(() => agent.addTool(sameName)).toThrow(/already has a tool/);
   });
 
   test("run results can be chained as history", async () => {

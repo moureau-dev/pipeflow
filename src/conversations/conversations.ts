@@ -1,5 +1,5 @@
 import type { Agent } from "../agents/agent.ts";
-import type { Persistence } from "../../persistence/persistence.ts";
+import type { Persistence } from "../persistence/persistence.ts";
 import type { ConversationId } from "./types.ts";
 import type { TranscriptEntry } from "./transcription/transcription.ts";
 import { Conversation } from "./conversation/conversation.ts";

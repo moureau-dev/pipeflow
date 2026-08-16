@@ -1,4 +1,5 @@
 import type { LLM, LLMEvent, LLMRequest } from "../../types.ts";
+import type { FetchLike } from "../../../shared.ts";
 
 export interface DeepSeekOptions {
   apiKey: string;
@@ -7,7 +8,7 @@ export interface DeepSeekOptions {
   /** Defaults to `https://api.deepseek.com`. */
   baseUrl?: string;
   /** Injectable fetch implementation, mainly for tests. */
-  fetch?: typeof fetch;
+  fetch?: FetchLike;
 }
 
 interface DeepSeekDeltaToolCall {
@@ -30,7 +31,7 @@ export class DeepSeekLLM implements LLM {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
-  private readonly fetchImpl: typeof fetch;
+  private readonly fetchImpl: FetchLike;
   private abort: AbortController | null = null;
 
   constructor(options: DeepSeekOptions) {
@@ -47,7 +48,7 @@ export class DeepSeekLLM implements LLM {
     this.abort?.abort();
   }
 
-  async *stream(request: LLMRequest): AsyncIterable<LLMEvent> {
+  async *stream(request: LLMRequest): AsyncGenerator<LLMEvent> {
     // Only one generation at a time per adapter instance.
     this.abort?.abort();
     const controller = new AbortController();

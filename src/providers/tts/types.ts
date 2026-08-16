@@ -12,6 +12,6 @@ export interface TTSRequest {
  * transport-level failures. `stop()` cancels the in-flight synthesis.
  */
 export interface TTS {
-  stream(request: TTSRequest): AsyncIterable<Uint8Array>;
+  stream(request: TTSRequest): AsyncGenerator<Uint8Array>;
   stop(): void;
 }

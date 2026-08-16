@@ -1,5 +1,5 @@
 import type { Agent } from "../../agents/agent.ts";
-import type { Persistence } from "../../../persistence/persistence.ts";
+import type { Persistence } from "../../persistence/persistence.ts";
 import type {
   AudioChunk,
   ConversationId,
@@ -217,7 +217,7 @@ export class Conversation {
   async pushTranscript(
     input: Omit<TranscriptEntryInput, "conversationId">,
   ): Promise<TranscriptEntry> {
-    const entry = this.transcription.append({ ...input, conversationId: this.id });
+    const entry = this.transcription.append({ ...input });
     this.state.transcriptCount++;
     this.emit("transcript", { conversationId: this.id, entry });
     await this.persistence?.appendTranscript(this.id, entry);

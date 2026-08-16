@@ -2,9 +2,21 @@
   "name": "@moureau/pipeflow",
   "version": "0.0.1",
   "type": "module",
+  "private": false,
   "sideEffects": false,
+  "publishConfig": {
+    "access": "public"
+  },
   "engines": {
     "bun": ">=1.0.0"
+  },
+  "author": "Luiz Felipe Moureau",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/moureau-dev/pipeflow.git"
+  },
+  "bugs": {
+    "url": "https://github.com/moureau-dev/pipeflow/issues"
   },
   "main": "./dist/cjs/index.js",
   "module": "./dist/esm/index.js",

@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
     inputs:
       ref:
-        description: "Tag or commit to publish from (e.g. v0.0.0)"
-        required: true
+        description: "Ref to publish from (optional; defaults to the default branch)"
+        required: false
         type: string
 
 jobs:
@@ -18,7 +18,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
         with:
-          # Release runs check out the tag; manual runs use the requested ref.
+          # Manual runs publish the requested ref, or the default branch when
+          # the box is left empty. Release runs check out the release tag.
           ref: ${{ inputs.ref || github.ref_name }}
 
       - name: Setup Bun
@@ -48,6 +49,9 @@ jobs:
         run: bun run test --bail
 
       - name: Publish to npm
-        run: npm publish
+        # Scoped packages default to private; `--access public` publishes them
+        # publicly (free). publishConfig.access in package.json also covers
+        # local `npm publish` runs.
+        run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

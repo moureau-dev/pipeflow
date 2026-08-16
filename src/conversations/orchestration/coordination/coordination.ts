@@ -156,7 +156,7 @@ function delegateActionSchema(
         .array(
           z.object({
             agent: targetsEnum(agentTargets).describe("Agent name or alias from the roster."),
-            prompt: z.string().describe("Self-contained instruction for that agent."),
+            prompt: z.string().trim().min(1, "a prompt is required").describe("Self-contained instruction for that agent."),
           }),
         )
         .describe("Agents to run in parallel.")
@@ -171,11 +171,11 @@ function delegateActionSchema(
     }),
     z.object({
       action: z.literal("user"),
-      question: z.string().min(1, "a question is required").describe("Clarifying question for the user."),
+      question: z.string().trim().min(1, "a question is required").describe("Clarifying question for the user."),
     }),
     z.object({
       action: z.literal("complete"),
-      output: z.string().min(1, "an output is required").describe("The final spoken answer."),
+      output: z.string().trim().min(1, "an output is required").describe("The final spoken answer."),
     }),
   ]);
 }
@@ -200,7 +200,7 @@ export function delegateToolDefinition(
       .array(
         z.object({
           agent: targetsEnum(agentTargets).describe("Agent name or alias from the roster."),
-          prompt: z.string().describe("Self-contained instruction for that agent."),
+          prompt: z.string().trim().min(1, "a prompt is required").describe("Self-contained instruction for that agent."),
         }),
       )
       .describe("Agents to run in parallel (action 'agents').")
@@ -214,10 +214,14 @@ export function delegateToolDefinition(
       .optional(),
     question: z
       .string()
+      .trim()
+      .min(1, "a question is required")
       .describe("Clarifying question for the user (action 'user').")
       .optional(),
     output: z
       .string()
+      .trim()
+      .min(1, "an output is required")
       .describe("The final spoken answer (action 'complete').")
       .optional(),
   });
@@ -387,6 +391,12 @@ export class Coordination {
           case "done":
             done = true;
         }
+      }
+
+      // Re-check the wall-clock limit after the round trip: a single slow
+      // iteration must still count against maxDurationMs.
+      if (this.maxDurationMs && Date.now() - startedAt > this.maxDurationMs) {
+        throw new CoordinationBudgetExceeded(`"${this.name}" exceeded ${this.maxDurationMs}ms`);
       }
 
       if (toolCalls.length > 0) {

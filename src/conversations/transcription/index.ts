@@ -1,5 +1,5 @@
-export { Transcription, TranscriptEntry } from "./transcription.ts";
+export { Transcription, TranscriptEntry } from "./transcription";
 export type {
   TranscriptEntryInput,
   TranscriptSpeakerKind,
-} from "./transcription.ts";
+} from "./transcription";

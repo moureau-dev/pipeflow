@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import type { Message } from "../../types.ts";
-import { MemoryTransport } from "./memory.ts";
+import type { Message } from "../../types";
+import { MemoryTransport } from "./memory";
 
 function sampleMessage(overrides: Record<string, unknown> = {}): Message {
   return {

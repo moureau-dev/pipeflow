@@ -5,13 +5,13 @@ import type {
   Participant,
   Turn,
   UserId,
-} from "../../../conversations/types.ts";
-import { TranscriptEntry } from "../../../conversations/transcription/transcription.ts";
+} from "../../../conversations/types";
+import { TranscriptEntry } from "../../../conversations/transcription/transcription";
 import type {
   ConversationRecord,
   NewConversation,
   Persistence,
-} from "../../persistence.ts";
+} from "../../persistence";
 
 export interface SQLitePersistenceOptions {
   /** Database filename. Defaults to an in-memory database. */

@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { Conversation } from "./conversation.ts";
-import { MemoryPersistence } from "../../persistence/adapters/memory/memory.ts";
-import type { Generation, ToolCall, ToolCallResult, Turn } from "../types.ts";
+import { Conversation } from "./conversation";
+import { MemoryPersistence } from "../../persistence/adapters/memory/memory";
+import type { Generation, ToolCall, ToolCallResult, Turn } from "../types";
 
 function makeConversation(
   options: { withPersistence?: boolean } = {},

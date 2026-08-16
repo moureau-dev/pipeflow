@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Transcription, TranscriptEntry } from "./transcription.ts";
+import { Transcription, TranscriptEntry } from "./transcription";
 
 describe("Transcription", () => {
   test("starts empty", () => {

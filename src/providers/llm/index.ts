@@ -1,4 +1,4 @@
-import type { LLM, LLMRequest } from "./types.ts";
+import type { LLM, LLMRequest } from "./types";
 
 export type {
   LLM,
@@ -8,7 +8,7 @@ export type {
   LLMToolCall,
   LLMToolDefinition,
   LLMRequest,
-} from "./types.ts";
+} from "./types";
 
 /**
  * Stream only the text deltas of an LLM generation, rethrowing any
@@ -36,4 +36,4 @@ export async function complete(llm: LLM, request: LLMRequest): Promise<string> {
   return text;
 }
 
-export { DeepSeekLLM } from "./adapters/index.ts";
+export { DeepSeekLLM } from "./adapters/index";

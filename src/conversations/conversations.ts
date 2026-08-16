@@ -1,8 +1,8 @@
-import type { Agent } from "../agents/agent.ts";
-import type { Persistence } from "../persistence/persistence.ts";
-import type { ConversationId } from "./types.ts";
-import type { TranscriptEntry } from "./transcription/transcription.ts";
-import { Conversation } from "./conversation/conversation.ts";
+import type { Agent } from "../agents/agent";
+import type { Persistence } from "../persistence/persistence";
+import type { ConversationId } from "./types";
+import type { TranscriptEntry } from "./transcription/transcription";
+import { Conversation } from "./conversation/conversation";
 
 export interface CreateConversationOptions {
   agents?: Agent[];

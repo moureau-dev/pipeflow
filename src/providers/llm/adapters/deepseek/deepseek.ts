@@ -1,5 +1,5 @@
-import type { LLM, LLMEvent, LLMRequest } from "../../types.ts";
-import type { FetchLike } from "../../../shared.ts";
+import type { LLM, LLMEvent, LLMRequest } from "../../types";
+import type { FetchLike } from "../../../shared";
 
 export interface DeepSeekOptions {
   apiKey: string;

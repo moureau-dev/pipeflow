@@ -1,5 +1,5 @@
-export { Conversation } from "./conversation.ts";
+export { Conversation } from "./conversation";
 export type {
   ConversationEvents,
   ConversationOptions,
-} from "./conversation.ts";
+} from "./conversation";

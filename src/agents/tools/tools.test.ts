@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { Tool } from "./tools.ts";
+import { Tool } from "./tools";
 
 describe("Tool", () => {
   test("stores name, description and parameters", () => {

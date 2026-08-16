@@ -1,15 +1,15 @@
-import type { Agent } from "../../../agents/agent.ts";
-import type { Conversation } from "../../conversation/conversation.ts";
-import type { Persistence } from "../../../persistence/persistence.ts";
+import type { Agent } from "../../../agents/agent";
+import type { Conversation } from "../../conversation/conversation";
+import type { Persistence } from "../../../persistence/persistence";
 import type {
   LLM,
   LLMMessage,
   LLMToolCall,
   LLMToolDefinition,
-} from "../../../providers/llm/types.ts";
-import type { STT, STTSession } from "../../../providers/stt/types.ts";
-import type { TTS } from "../../../providers/tts/types.ts";
-import type { AudioChunk, ToolCallResult, Turn, UserId } from "../../types.ts";
+} from "../../../providers/llm/types";
+import type { STT, STTSession } from "../../../providers/stt/types";
+import type { TTS } from "../../../providers/tts/types";
+import type { AudioChunk, ToolCallResult, Turn, UserId } from "../../types";
 
 export interface OrchestratorOptions {
   conversation: Conversation;

@@ -1,10 +1,10 @@
-import { Tool } from "./tools/tools.ts";
+import { Tool } from "./tools/tools";
 import type {
   LLM,
   LLMMessage,
   LLMToolCall,
   LLMToolDefinition,
-} from "../providers/llm/types.ts";
+} from "../providers/llm/types";
 
 export interface AgentOptions {
   name: string;

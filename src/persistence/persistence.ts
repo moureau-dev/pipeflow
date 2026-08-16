@@ -4,8 +4,8 @@ import type {
   Participant,
   Turn,
   UserId,
-} from "../conversations/types.ts";
-import type { TranscriptEntry } from "../conversations/transcription/transcription.ts";
+} from "../conversations/types";
+import type { TranscriptEntry } from "../conversations/transcription/transcription";
 
 export interface ConversationRecord {
   id: ConversationId;

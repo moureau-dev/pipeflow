@@ -1,4 +1,4 @@
-import type { STT, STTOptions, STTSession } from "../../types.ts";
+import type { STT, STTOptions, STTSession } from "../../types";
 
 /**
  * The minimal WebSocket surface used by the Deepgram adapter. Both the global

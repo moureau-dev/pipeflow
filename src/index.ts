@@ -1,10 +1,10 @@
-import { Agent, type AgentOptions } from "./agents/agent.ts";
-import { Conversations } from "./conversations/conversations.ts";
-import { MemoryPersistence } from "./persistence/adapters/memory/memory.ts";
-import type { Persistence } from "./persistence/persistence.ts";
-import type { LLM } from "./providers/llm/types.ts";
-import type { STT } from "./providers/stt/types.ts";
-import type { TTS } from "./providers/tts/types.ts";
+import { Agent, type AgentOptions } from "./agents/agent";
+import { Conversations } from "./conversations/conversations";
+import { MemoryPersistence } from "./persistence/adapters/memory/memory";
+import type { Persistence } from "./persistence/persistence";
+import type { LLM } from "./providers/llm/types";
+import type { STT } from "./providers/stt/types";
+import type { TTS } from "./providers/tts/types";
 
 export interface PipeflowOptions {
   llm?: LLM;
@@ -55,9 +55,9 @@ export type {
   AgentRunRequest,
   AgentRunResult,
   ExecutedToolCall,
-} from "./agents/agent.ts";
-export { Tool, Tool as PipeflowTool } from "./agents/tools/tools.ts";
-export type { ToolOptions } from "./agents/tools/tools.ts";
+} from "./agents/agent";
+export { Tool, Tool as PipeflowTool } from "./agents/tools/tools";
+export type { ToolOptions } from "./agents/tools/tools";
 
 export {
   Conversation,
@@ -65,7 +65,7 @@ export {
   Orchestrator,
   Transcription,
   TranscriptEntry,
-} from "./conversations/index.ts";
+} from "./conversations/index";
 export type {
   AudioChunk,
   ConversationEvents,
@@ -86,7 +86,7 @@ export type {
   Turn,
   TurnId,
   UserId,
-} from "./conversations/index.ts";
+} from "./conversations/index";
 
 // ---------------------------------------------------------------------------
 // Configuration interfaces.
@@ -100,7 +100,7 @@ export type {
 //   import { MemoryTransport } from "pipeflow/transport";
 // ---------------------------------------------------------------------------
 
-export type { LLM, LLMMessage } from "./providers/llm/types.ts";
-export type { STT } from "./providers/stt/types.ts";
-export type { TTS } from "./providers/tts/types.ts";
-export type { Persistence } from "./persistence/persistence.ts";
+export type { LLM, LLMMessage } from "./providers/llm/types";
+export type { STT } from "./providers/stt/types";
+export type { TTS } from "./providers/tts/types";
+export type { Persistence } from "./persistence/persistence";

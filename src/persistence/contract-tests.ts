@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import type { Generation, Participant, Turn } from "../conversations/types.ts";
-import { TranscriptEntry } from "../conversations/transcription/transcription.ts";
-import type { Persistence } from "./persistence.ts";
+import type { Generation, Participant, Turn } from "../conversations/types";
+import { TranscriptEntry } from "../conversations/transcription/transcription";
+import type { Persistence } from "./persistence";
 
 /**
  * A shared test suite that every Persistence adapter must pass.

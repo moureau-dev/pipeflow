@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { KokoroTTS } from "./kokoro.ts";
+import { KokoroTTS } from "./kokoro";
 
 function audioResponse(payload: Uint8Array, chunkSizes: number[]): Response {
   const stream = new ReadableStream<Uint8Array>({

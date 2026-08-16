@@ -12,19 +12,19 @@ export type {
   Turn,
   TurnId,
   UserId,
-} from "./types.ts";
-export { createConversationState } from "./types.ts";
-export { Conversation } from "./conversation/index.ts";
+} from "./types";
+export { createConversationState } from "./types";
+export { Conversation } from "./conversation/index";
 export type {
   ConversationEvents,
   ConversationOptions,
-} from "./conversation/index.ts";
-export { Conversations } from "./conversations.ts";
-export type { CreateConversationOptions } from "./conversations.ts";
-export { Orchestrator } from "./orchestration/orchestrator/index.ts";
-export type { OrchestratorOptions } from "./orchestration/orchestrator/index.ts";
-export { Transcription, TranscriptEntry } from "./transcription/index.ts";
+} from "./conversation/index";
+export { Conversations } from "./conversations";
+export type { CreateConversationOptions } from "./conversations";
+export { Orchestrator } from "./orchestration/orchestrator/index";
+export type { OrchestratorOptions } from "./orchestration/orchestrator/index";
+export { Transcription, TranscriptEntry } from "./transcription/index";
 export type {
   TranscriptEntryInput,
   TranscriptSpeakerKind,
-} from "./transcription/index.ts";
+} from "./transcription/index";

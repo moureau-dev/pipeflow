@@ -1,1 +1,1 @@
-export { DeepgramSTT } from "./deepgram/deepgram.ts";
+export { DeepgramSTT } from "./deepgram/deepgram";

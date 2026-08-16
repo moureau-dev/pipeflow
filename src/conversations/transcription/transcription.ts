@@ -1,4 +1,4 @@
-import type { ConversationId } from "../types.ts";
+import type { ConversationId } from "../types";
 
 export type TranscriptSpeakerKind = "participant" | "agent";
 

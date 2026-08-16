@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { DeepgramSTT, DeepgramSession, type STTSocket } from "./deepgram.ts";
-import type { STTSession } from "../../types.ts";
+import { DeepgramSTT, DeepgramSession, type STTSocket } from "./deepgram";
+import type { STTSession } from "../../types";
 
 type SentFrame =
   | { kind: "data"; data: string | ArrayBuffer | ArrayBufferView }

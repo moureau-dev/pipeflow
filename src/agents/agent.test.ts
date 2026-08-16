@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
-import { Agent } from "./agent.ts";
-import { Tool } from "./tools/tools.ts";
-import type { LLM, LLMEvent, LLMRequest } from "../providers/llm/types.ts";
+import { Agent } from "./agent";
+import { Tool } from "./tools/tools";
+import type { LLM, LLMEvent, LLMRequest } from "../providers/llm/types";
 
 class FakeLLM implements LLM {
   readonly requests: LLMRequest[] = [];

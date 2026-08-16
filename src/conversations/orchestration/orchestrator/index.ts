@@ -1,2 +1,2 @@
-export { Orchestrator } from "./orchestrator.ts";
-export type { OrchestratorOptions } from "./orchestrator.ts";
+export { Orchestrator } from "./orchestrator";
+export type { OrchestratorOptions } from "./orchestrator";

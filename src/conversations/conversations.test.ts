@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { Conversations } from "./conversations.ts";
-import { MemoryPersistence } from "../persistence/adapters/memory/memory.ts";
-import { Conversation } from "./conversation/conversation.ts";
-import { Agent } from "../agents/agent.ts";
+import { Conversations } from "./conversations";
+import { MemoryPersistence } from "../persistence/adapters/memory/memory";
+import { Conversation } from "./conversation/conversation";
+import { Agent } from "../agents/agent";
 
 describe("Conversations", () => {
   test("create persists a conversation and returns a runtime handle", async () => {

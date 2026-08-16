@@ -1,5 +1,5 @@
-import type { Agent } from "../../agents/agent.ts";
-import type { Persistence } from "../../persistence/persistence.ts";
+import type { Agent } from "../../agents/agent";
+import type { Persistence } from "../../persistence/persistence";
 import type {
   AudioChunk,
   ConversationId,
@@ -10,14 +10,14 @@ import type {
   ParticipantInput,
   Turn,
   UserId,
-} from "../types.ts";
-import { createConversationState } from "../types.ts";
+} from "../types";
+import { createConversationState } from "../types";
 import {
   Transcription,
   type TranscriptEntry,
   type TranscriptEntryInput,
-} from "../transcription/transcription.ts";
-import type { ToolCall, ToolCallResult } from "../types.ts";
+} from "../transcription/transcription";
+import type { ToolCall, ToolCallResult } from "../types";
 
 export interface ConversationOptions {
   id: ConversationId;

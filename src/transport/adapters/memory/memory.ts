@@ -1,4 +1,4 @@
-import type { Message, Transport } from "../../types.ts";
+import type { Message, Transport } from "../../types";
 
 /**
  * In-process transport used for tests and development.

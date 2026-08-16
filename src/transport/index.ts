@@ -1,2 +1,2 @@
-export type { Message, Transport } from "./types.ts";
-export { MemoryTransport } from "./adapters/index.ts";
+export type { Message, Transport } from "./types";
+export { MemoryTransport } from "./adapters/index";

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { persistenceContractTests } from "../../contract-tests.ts";
-import { MemoryPersistence } from "./memory.ts";
+import { persistenceContractTests } from "../../contract-tests";
+import { MemoryPersistence } from "./memory";
 
 persistenceContractTests(() => new MemoryPersistence());
 

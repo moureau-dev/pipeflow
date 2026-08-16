@@ -4,13 +4,13 @@ import type {
   Participant,
   Turn,
   UserId,
-} from "../../../conversations/types.ts";
-import type { TranscriptEntry } from "../../../conversations/transcription/transcription.ts";
+} from "../../../conversations/types";
+import type { TranscriptEntry } from "../../../conversations/transcription/transcription";
 import type {
   ConversationRecord,
   NewConversation,
   Persistence,
-} from "../../persistence.ts";
+} from "../../persistence";
 
 /**
  * In-memory persistence adapter. Useful for tests and development: data is

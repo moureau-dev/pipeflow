@@ -1,2 +1,2 @@
-export { MemoryPersistence } from "./memory/memory.ts";
-export { SQLitePersistence } from "./sqlite/sqlite.ts";
+export { MemoryPersistence } from "./memory/memory";
+export { SQLitePersistence } from "./sqlite/sqlite";

@@ -8,17 +8,17 @@ import {
   Tool,
   Transcription,
   TranscriptEntry,
-} from "./index.ts";
+} from "./index";
 import {
   DeepSeekLLM,
   DeepgramSTT,
   KokoroTTS,
   complete,
   streamText,
-} from "./providers/index.ts";
-import { MemoryPersistence, SQLitePersistence } from "./persistence/index.ts";
-import { MemoryTransport } from "./transport/index.ts";
-import type { LLM, LLMEvent, LLMRequest } from "./providers/index.ts";
+} from "./providers/index";
+import { MemoryPersistence, SQLitePersistence } from "./persistence/index";
+import { MemoryTransport } from "./transport/index";
+import type { LLM, LLMEvent, LLMRequest } from "./providers/index";
 
 class FakeLLM implements LLM {
   readonly requests: LLMRequest[] = [];
@@ -153,7 +153,7 @@ describe("public exports", () => {
   });
 
   test("the main entry does not leak implementation detail", async () => {
-    const index = await import("./index.ts");
+    const index = await import("./index");
     expect("DeepSeekLLM" in index).toBe(false);
     expect("DeepgramSTT" in index).toBe(false);
     expect("KokoroTTS" in index).toBe(false);

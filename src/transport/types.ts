@@ -3,8 +3,8 @@ import type {
   ConversationId,
   Turn,
   UserId,
-} from "../conversations/types.ts";
-import type { TranscriptEntry } from "../conversations/transcription/transcription.ts";
+} from "../conversations/types";
+import type { TranscriptEntry } from "../conversations/transcription/transcription";
 
 /**
  * Messages exchanged between Pipeflow and the application over a Transport.

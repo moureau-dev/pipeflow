@@ -1,17 +1,17 @@
 import { describe, expect, test } from "bun:test";
-import { Agent } from "../../../agents/agent.ts";
-import { Tool } from "../../../agents/tools/tools.ts";
-import { Conversation } from "../../conversation/conversation.ts";
-import { MemoryPersistence } from "../../../persistence/adapters/memory/memory.ts";
-import { Orchestrator } from "./orchestrator.ts";
-import type { AudioChunk, ToolCall, UserId } from "../../types.ts";
+import { Agent } from "../../../agents/agent";
+import { Tool } from "../../../agents/tools/tools";
+import { Conversation } from "../../conversation/conversation";
+import { MemoryPersistence } from "../../../persistence/adapters/memory/memory";
+import { Orchestrator } from "./orchestrator";
+import type { AudioChunk, ToolCall, UserId } from "../../types";
 import type {
   LLM,
   LLMEvent,
   LLMRequest,
-} from "../../../providers/llm/types.ts";
-import type { STT, STTOptions, STTSession } from "../../../providers/stt/types.ts";
-import type { TTS, TTSRequest } from "../../../providers/tts/types.ts";
+} from "../../../providers/llm/types";
+import type { STT, STTOptions, STTSession } from "../../../providers/stt/types";
+import type { TTS, TTSRequest } from "../../../providers/tts/types";
 
 // ---------------------------------------------------------------------------
 // Fake providers

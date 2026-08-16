@@ -1,1 +1,1 @@
-export { DeepSeekLLM } from "./deepseek/deepseek.ts";
+export { DeepSeekLLM } from "./deepseek/deepseek";

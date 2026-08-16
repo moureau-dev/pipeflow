@@ -2,9 +2,9 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { persistenceContractTests } from "../../contract-tests.ts";
-import { TranscriptEntry } from "../../../conversations/transcription/transcription.ts";
-import { SQLitePersistence } from "./sqlite.ts";
+import { persistenceContractTests } from "../../contract-tests";
+import { TranscriptEntry } from "../../../conversations/transcription/transcription";
+import { SQLitePersistence } from "./sqlite";
 
 persistenceContractTests(() => new SQLitePersistence());
 

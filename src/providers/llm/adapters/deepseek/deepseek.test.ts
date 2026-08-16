@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
-import { DeepSeekLLM } from "./deepseek.ts";
-import type { LLMRequest } from "../../types.ts";
+import { DeepSeekLLM } from "./deepseek";
+import type { LLMRequest } from "../../types";
 
 function sseResponse(...frames: string[]): Response {
   const encoder = new TextEncoder();

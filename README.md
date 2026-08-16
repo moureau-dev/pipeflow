@@ -10,7 +10,7 @@ It handles the plumbing between audio, speech-to-text, LLMs, text-to-speech, con
 
 ## Highlights
 
-* **Small** — under 100 kB packed, zero runtime dependencies.
+* **Small** — ~130 kB packed, one runtime dependency ([zod](https://github.com/colinhacks/zod)).
 * **Realtime by default** — audio, transcripts, and speech stream continuously, with built-in interruption and barge-in handling.
 * **Provider-agnostic** — STT, LLM, and TTS are swappable adapters (Deepgram, DeepSeek, and Kokoro today).
 * **Your backend stays yours** — tools and the audio transport are owned by your application; Pipeflow never executes your code.
@@ -70,9 +70,9 @@ An agent does not inherently own a conversation. A conversation does not require
 bun add @moureau/pipeflow
 ```
 
-The package is not published to npm yet. Until then, install from the
-repository (`bun add git@github.com:moureau-dev/pipeflow.git`) or build from
-source — see [Development](#development).
+Published on npm as `@moureau/pipeflow`. Alternatively, install directly from
+the repository (`bun add git@github.com:moureau-dev/pipeflow.git`) or build
+from source — see [Development](#development).
 
 ## Basic voice agent
 
@@ -180,10 +180,10 @@ const conversation =
 
 console.log(conversation.id);
 
-conversation.start();
+await conversation.start();
 ```
 
-Creation and realtime execution are deliberately separate.
+Creation and realtime execution are deliberately separate:
 
 ```ts
 create()       // creates the persistent conversation
@@ -193,27 +193,16 @@ listen()       // sends audio
 stop()         // finalizes the realtime session
 ```
 
-Realtime processing is attached automatically by `start()`: the orchestrator
-subscribes to `audio-in` events, runs the STT/LLM/TTS pipeline, and pushes
-generated audio, turns, transcripts, and tool calls back through conversation
-events.
+`start()` attaches the orchestrator, which subscribes to `audio-in` events,
+runs the STT/LLM/TTS pipeline, and pushes generated audio, turns, transcripts,
+and tool calls back through conversation events.
 
-`listen()` is intentionally synchronous:
+`listen()` is intentionally synchronous — it means "send this audio packet",
+not "wait for this utterance to finish":
 
 ```ts
-conversation.listen({
-  userId,
-  audio,
-});
+conversation.listen({ userId, audio });
 ```
-
-It means:
-
-> Send this audio packet.
-
-It does not mean:
-
-> Wait for this utterance to finish.
 
 This makes it suitable for high-frequency realtime audio streams.
 
@@ -388,10 +377,6 @@ This is useful for ordinary LLM workloads where realtime audio and conversation 
 
 When an agent is attached to a conversation, it can take conversational turns as part of the realtime orchestration.
 
-The conversation owns the runtime.
-
-The agent owns the intelligence.
-
 A conversation can coordinate **multiple agents**: `create({ agents })` accepts
 a roster, and each turn is routed to the agent whose name or alias appears in
 the speech — falling back to the first agent when none is addressed. Each
@@ -434,11 +419,6 @@ what should happen next rather than doing the work itself. It can:
 - **ask the user** a clarifying question and *suspend* until they answer;
 - **complete** with a direct answer.
 
-See [src/conversations/orchestration/coordination/README.md](src/conversations/orchestration/coordination/README.md)
-for the coordination model and
-[src/conversations/orchestration/orchestrator/README.md](src/conversations/orchestration/orchestrator/README.md)
-for how it is wired into the realtime pipeline.
-
 ```text
 User: "Book a flight and check whether my calendar conflicts."
               │
@@ -459,48 +439,20 @@ User: "Book a flight and check whether my calendar conflicts."
             User
 ```
 
-The coordination's LLM picks the next step through a synthetic `delegate`
-tool:
-
-```jsonc
-// emitted by the coordination's LLM, handled by the orchestrator
-delegate({
-  action: "agents",
-  tasks: [
-    { agent: "Travel Agent", prompt: "Find flights Paris → London tomorrow morning." },
-    { agent: "Calendar Agent", prompt: "Check meetings on Tuesday afternoon." }
-  ]
-})
-```
-
 Agent delegation runs as **sub-generations**: the target agent executes on its
 own LLM, context, and tools (which still run in your backend), and every
 delegated prompt is stamped with the current time so time-sensitive tasks
 reason about the right "now". Delegated agents are text-only — the coordination
-narrates while they work and speaks the merged answer. Their work is recorded
-in the transcript and persisted as sub-generations; the conversation history
-keeps the coordination's final answer.
+narrates while they work and speaks the merged answer.
 
-Clarification is a first-class operation. If the request is ambiguous, the
-coordination asks a question, parks its execution, and **resumes on the next
-turn** instead of starting fresh — so "Which airport?" followed by "CDG"
-continues the same reasoning. While waiting, participant speech is treated as
-the answer, not as a barge-in. Coordinations can delegate to other
-coordinations, forming a bounded execution graph; a step budget guards against
-runaway delegation.
+Clarification is a first-class operation: an ambiguous request parks the
+coordination and **resumes on the next turn** instead of starting fresh.
+While waiting, participant speech is treated as the answer, not as a barge-in.
 
-```text
-Agent
- ├── context
- └── tools
-
-Conversation
- ├── participants
- ├── turns
- ├── audio
- ├── interruption
- └── orchestration
-```
+See [src/conversations/orchestration/coordination/README.md](src/conversations/orchestration/coordination/README.md)
+for the coordination model and
+[src/conversations/orchestration/orchestrator/README.md](src/conversations/orchestration/orchestrator/README.md)
+for how it is wired into the realtime pipeline.
 
 ## Tools
 
@@ -688,36 +640,12 @@ If it needs conversation data, **a tool provides that capability**.
 <details>
 <summary>Vendor-independent interfaces and the current adapters: Deepgram, DeepSeek, Kokoro</summary>
 
-Pipeflow separates provider interfaces from provider implementations.
+Pipeflow separates provider interfaces (LLM, STT, TTS) from their
+implementations. The orchestrator works against the interfaces rather than
+directly against vendor APIs, so providers can be replaced without changing the
+conversation layer.
 
-See [src/providers/README.md](src/providers/README.md) for the interfaces,
-adapter contracts, and the current providers.
-
-```text
-providers/
-├── llm/
-│   ├── types.ts
-│   └── adapters/
-│       └── deepseek/
-│
-├── stt/
-│   ├── types.ts
-│   └── adapters/
-│       └── deepgram/
-│
-└── tts/
-    ├── types.ts
-    └── adapters/
-        └── kokoro/
-```
-
-The orchestrator works against provider interfaces rather than directly against vendor APIs.
-
-This makes it possible to replace providers without changing the conversation layer.
-
-### Current providers
-
-The project currently contains adapters for:
+The project currently ships adapters for:
 
 * **STT:** Deepgram
 * **LLM:** DeepSeek
@@ -727,6 +655,9 @@ Providers are configured with their own credentials — Pipeflow itself does
 not hold an API key.
 
 Provider availability and configuration are evolving during early development.
+
+See [src/providers/README.md](src/providers/README.md) for the interfaces and
+adapter contracts.
 
 </details>
 
@@ -799,25 +730,22 @@ See [src/transport/README.md](src/transport/README.md).
 <details>
 <summary>Storage adapters: in-memory for development, SQLite for lightweight persistence</summary>
 
-Pipeflow separates persistence from the conversation domain.
+Pipeflow separates persistence from the conversation domain. The in-memory
+adapter is useful for tests and development; SQLite provides a lightweight
+persistent backend suitable for local applications and early deployments. The
+persistence interface is intentionally provider-independent so other storage
+implementations can be added later.
+
+```ts
+import { SQLitePersistence } from "@moureau/pipeflow/persistence";
+
+const pipeflow = new Pipeflow({
+  persistence: new SQLitePersistence({ filename: "./pipeflow.db" }),
+});
+```
 
 See [src/persistence/README.md](src/persistence/README.md) for the storage
 contract and adapters.
-
-The project currently includes:
-
-```text
-persistence/
-└── adapters/
-    ├── memory/
-    └── sqlite/
-```
-
-The in-memory adapter is useful for tests and development.
-
-SQLite provides a lightweight persistent backend suitable for local applications and early deployments.
-
-The persistence interface is intentionally provider-independent so other storage implementations can be added later.
 
 </details>
 

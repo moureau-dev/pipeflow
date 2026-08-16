@@ -8,6 +8,13 @@ It handles the plumbing between audio, speech-to-text, LLMs, text-to-speech, con
 
 > **Pipeflow is the pipe. You build what flows through it.**
 
+## Highlights
+
+* **Small** — under 100 kB packed, zero runtime dependencies.
+* **Realtime by default** — audio, transcripts, and speech stream continuously, with built-in interruption and barge-in handling.
+* **Provider-agnostic** — STT, LLM, and TTS are swappable adapters (Deepgram, DeepSeek, and Kokoro today).
+* **Your backend stays yours** — tools and the audio transport are owned by your application; Pipeflow never executes your code.
+
 ## Status
 
 🚧 **Early development**
@@ -62,6 +69,10 @@ An agent does not inherently own a conversation. A conversation does not require
 ```bash
 bun add pipeflow
 ```
+
+The package is not published to npm yet. Until then, install from the
+repository (`bun add pipeflow`) or build from
+source — see [Development](#development).
 
 ## Basic voice agent
 
@@ -763,6 +774,13 @@ Run tests:
 
 ```bash
 bun test
+```
+
+Build and type-check:
+
+```bash
+bun run build       # transpile to dist/esm + dist/cjs and emit dist/types
+bun run typecheck
 ```
 
 The project uses Bun and TypeScript.

@@ -289,8 +289,9 @@ describe("Conversations", () => {
       yield {
         type: "tool_call",
         id: "call_1",
-        name: "dispatch",
+        name: "delegate",
         arguments: JSON.stringify({
+          action: "agents",
           tasks: [{ agent: "Calendar Agent", prompt: "Check Tuesday afternoon." }],
         }),
       };

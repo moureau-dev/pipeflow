@@ -216,6 +216,8 @@ function setupRoster(options: {
   coordinatorScript: LLMScript;
   scripts: Record<string, LLMScript>;
   tools?: Record<string, Tool<never, unknown>[]>;
+  coordinations?: Array<{ name: string; prompt: string; llm: FakeLLM }>;
+  maxCoordinationSteps?: number;
 }): Promise<RosterHarness> {
   return (async () => {
     const persistence = new MemoryPersistence();
@@ -240,11 +242,28 @@ function setupRoster(options: {
         }),
       );
     }
+    // The built-in `understand` coordination only activates with a roster of
+    // more than one agent, so guarantee one for tests that only exercise the
+    // coordination itself.
+    if (agents.length === 1) {
+      const helperLlm = new FakeLLM(respond("ok"));
+      llms.set("Helper", helperLlm);
+      agents.push(new Agent({ name: "Helper", context: "You help.", llm: helperLlm }));
+    }
+    for (const coordination of options.coordinations ?? []) {
+      llms.set(coordination.name, coordination.llm);
+    }
 
     const orchestrator = new Orchestrator({
       conversation,
       agents,
       llm: coordinatorLlm,
+      coordinations: (options.coordinations ?? []).map((coordination) => ({
+        name: coordination.name,
+        prompt: coordination.prompt,
+        llm: coordination.llm,
+      })),
+      maxCoordinationSteps: options.maxCoordinationSteps,
       stt,
       tts,
       persistence,
@@ -637,27 +656,33 @@ describe("Orchestrator", () => {
     await conversation.participate({ userId: "alice", aliases: ["al"] });
     await orchestrator.start();
 
-    // Unaddressed turn → the first agent is the default.
+    // An unaddressed turn runs through the built-in `understand` coordination
+    // (on the shared LLM), which answers directly here.
     conversation.listen({ userId: "alice", audio: new Uint8Array([1]) });
     stt.sessions[0]!.emitFinal("Hello there.");
     await orchestrator.whenIdle();
 
     expect(receptionistLlm.requests).toHaveLength(1);
     expect(specialistLlm.requests).toHaveLength(0);
-    expect(receptionistLlm.requests[0]!.messages).toEqual([
-      { role: "system", name: "Receptionist", content: "You greet people." },
-      { role: "user", content: "al: Hello there." },
-    ]);
+    // Understand's system prompt lists the roster and routes the turn.
+    const understandMessages = receptionistLlm.requests[0]!.messages;
+    expect(understandMessages[0]!.role).toBe("system");
+    expect(String(understandMessages[0]!.content)).toContain("coordinator");
+    expect(String(understandMessages[0]!.content)).toContain("Technical Specialist");
+    expect(understandMessages.at(-1)).toEqual({
+      role: "user",
+      content: "al: Hello there.",
+    });
 
-    // An addressed turn goes to the specialist — and runs on the
-    // specialist's own LLM rather than the default agent's.
+    // An addressed turn goes straight to the specialist — and runs on the
+    // specialist's own LLM rather than through the coordination.
     stt.sessions[0]!.emitFinal("Ask the technical specialist to fix it.");
     await orchestrator.whenIdle();
 
     expect(specialistLlm.requests).toHaveLength(1);
     expect(receptionistLlm.requests).toHaveLength(1);
     // The specialist gets its own system context plus the shared history,
-    // with the receptionist's reply attributed by name.
+    // with the coordination's reply attributed by name.
     expect(specialistLlm.requests[0]!.messages).toEqual([
       {
         role: "system",
@@ -745,8 +770,8 @@ describe("Orchestrator", () => {
     });
   });
 
-  describe("dispatch", () => {
-    function coordinatorThatDispatches(tasksJson: string): LLMScript {
+  describe("coordination", () => {
+    function understandThatDelegates(tasks: unknown[]): LLMScript {
       return async function* (request) {
         if (request.messages.at(-1)?.role === "tool") {
           yield { type: "delta", content: "I found a 3pm flight and your calendar is free." };
@@ -757,8 +782,8 @@ describe("Orchestrator", () => {
         yield {
           type: "tool_call",
           id: "call_1",
-          name: "dispatch",
-          arguments: tasksJson,
+          name: "delegate",
+          arguments: JSON.stringify({ action: "agents", tasks }),
         };
         yield { type: "done" };
       };
@@ -766,14 +791,10 @@ describe("Orchestrator", () => {
 
     test("decomposes a turn across specialist agents and merges the results", async () => {
       const harness = await setupRoster({
-        coordinatorScript: coordinatorThatDispatches(
-          JSON.stringify({
-            tasks: [
-              { agent: "Travel Agent", prompt: "Find flights Paris to London tomorrow morning." },
-              { agent: "Calendar Agent", prompt: "Check meetings on Tuesday afternoon." },
-            ],
-          }),
-        ),
+        coordinatorScript: understandThatDelegates([
+          { agent: "Travel Agent", prompt: "Find flights Paris to London tomorrow morning." },
+          { agent: "Calendar Agent", prompt: "Check meetings on Tuesday afternoon." },
+        ]),
         scripts: {
           "Travel Agent": respond("Flight at 3pm."),
           "Calendar Agent": respond("Free Tuesday afternoon."),
@@ -804,7 +825,7 @@ describe("Orchestrator", () => {
       expect(harness.llm.requests[1]!.messages.at(-1)).toEqual({
         role: "tool",
         toolCallId: "call_1",
-        name: "dispatch",
+        name: "delegate",
         content: JSON.stringify([
           { agent: "Travel Agent", text: "Flight at 3pm." },
           { agent: "Calendar Agent", text: "Free Tuesday afternoon." },
@@ -858,14 +879,10 @@ describe("Orchestrator", () => {
       };
 
       const harness = await setupRoster({
-        coordinatorScript: coordinatorThatDispatches(
-          JSON.stringify({
-            tasks: [
-              { agent: "Travel Agent", prompt: "Find flights." },
-              { agent: "Calendar Agent", prompt: "Check meetings." },
-            ],
-          }),
-        ),
+        coordinatorScript: understandThatDelegates([
+          { agent: "Travel Agent", prompt: "Find flights." },
+          { agent: "Calendar Agent", prompt: "Check meetings." },
+        ]),
         scripts: {
           "Travel Agent": async function* () {
             reached.push("travel");
@@ -900,11 +917,9 @@ describe("Orchestrator", () => {
       });
 
       const harness = await setupRoster({
-        coordinatorScript: coordinatorThatDispatches(
-          JSON.stringify({
-            tasks: [{ agent: "Calendar Agent", prompt: "Check Tuesday afternoon." }],
-          }),
-        ),
+        coordinatorScript: understandThatDelegates([
+          { agent: "Calendar Agent", prompt: "Check Tuesday afternoon." },
+        ]),
         scripts: {
           "Calendar Agent": async function* (request) {
             if (request.messages.at(-1)?.role === "tool") {
@@ -952,7 +967,7 @@ describe("Orchestrator", () => {
       // The coordinator merged the specialist's findings.
       expect(harness.llm.requests[1]!.messages.at(-1)).toMatchObject({
         role: "tool",
-        name: "dispatch",
+        name: "delegate",
       });
       expect(
         JSON.parse(
@@ -961,7 +976,7 @@ describe("Orchestrator", () => {
       ).toEqual([{ agent: "Calendar Agent", text: "Tuesday afternoon is free." }]);
     });
 
-    test("a dispatch to an unknown agent reports an error the coordinator can recover from", async () => {
+    test("a delegate to an unknown agent reports an error the coordinator can recover from", async () => {
       const harness = await setupRoster({
         coordinatorScript: async function* (request) {
           if (request.messages.at(-1)?.role === "tool") {
@@ -972,8 +987,9 @@ describe("Orchestrator", () => {
           yield {
             type: "tool_call",
             id: "call_1",
-            name: "dispatch",
+            name: "delegate",
             arguments: JSON.stringify({
+              action: "agents",
               tasks: [{ agent: "Ghost Agent", prompt: "Do the thing." }],
             }),
           };
@@ -984,15 +1000,15 @@ describe("Orchestrator", () => {
 
       await speak(harness, "alice", "Do the thing.");
 
-      const dispatchResult = harness.llm.requests[1]!.messages.at(-1) as {
+      const delegateResult = harness.llm.requests[1]!.messages.at(-1) as {
         content: string;
       };
-      expect(JSON.parse(dispatchResult.content)).toEqual([
+      expect(JSON.parse(delegateResult.content)).toEqual([
         { agent: "Ghost Agent", text: "", error: 'Unknown agent "Ghost Agent"' },
       ]);
       expect(harness.llm.requests[1]!.messages.at(-1)).toMatchObject({
         role: "tool",
-        name: "dispatch",
+        name: "delegate",
       });
 
       // No sub-generation was created, and the coordinator still completed.
@@ -1002,7 +1018,7 @@ describe("Orchestrator", () => {
       expect(generations[0]?.text).toBe("I could not reach that service.");
     });
 
-    test("malformed dispatch arguments surface the parse error instead of crashing", async () => {
+    test("malformed delegate arguments surface the parse error instead of crashing", async () => {
       const harness = await setupRoster({
         coordinatorScript: async function* (request) {
           if (request.messages.at(-1)?.role === "tool") {
@@ -1013,7 +1029,7 @@ describe("Orchestrator", () => {
           yield {
             type: "tool_call",
             id: "call_1",
-            name: "dispatch",
+            name: "delegate",
             arguments: "{not json",
           };
           yield { type: "done" };
@@ -1023,26 +1039,24 @@ describe("Orchestrator", () => {
 
       await speak(harness, "alice", "Do the thing.");
 
-      const dispatchResult = harness.llm.requests[1]!.messages.at(-1) as {
+      const delegateResult = harness.llm.requests[1]!.messages.at(-1) as {
         content: string;
       };
-      expect(JSON.parse(dispatchResult.content)).toEqual({
-        error: "dispatch arguments must be valid JSON",
+      expect(JSON.parse(delegateResult.content)).toEqual({
+        error: "delegate arguments must be valid JSON",
       });
       expect(harness.llm.requests[1]!.messages.at(-1)).toMatchObject({
         role: "tool",
-        name: "dispatch",
+        name: "delegate",
       });
     });
 
     test("interrupt cancels in-flight sub-generations", async () => {
       let travelCalls = 0;
       const harness = await setupRoster({
-        coordinatorScript: coordinatorThatDispatches(
-          JSON.stringify({
-            tasks: [{ agent: "Travel Agent", prompt: "Find flights." }],
-          }),
-        ),
+        coordinatorScript: understandThatDelegates([
+          { agent: "Travel Agent", prompt: "Find flights." },
+        ]),
         scripts: {
           "Travel Agent": async function* (_request, signal) {
             const n = travelCalls++;
@@ -1084,6 +1098,290 @@ describe("Orchestrator", () => {
       expect(subGens).toHaveLength(2);
       expect(subGens[1]?.status).toBe("completed");
       expect(subGens[1]?.text).toBe("Flight at 5pm.");
+    });
+
+    test("asks the user a clarifying question, suspends, and resumes with the answer", async () => {
+      let calls = 0;
+      const harness = await setupRoster({
+        coordinatorScript: async function* () {
+          const n = calls++;
+          if (n === 0) {
+            yield { type: "delta", content: "Which airport would you like to fly from? " };
+            yield {
+              type: "tool_call",
+              id: "call_1",
+              name: "delegate",
+              arguments: JSON.stringify({
+                action: "user",
+                question: "Which airport would you like to fly from?",
+              }),
+            };
+            yield { type: "done" };
+            return;
+          }
+          yield { type: "delta", content: "Booking your flight from CDG. " };
+          yield { type: "done" };
+        },
+        scripts: {},
+      });
+
+      await speak(harness, "alice", "Book me a flight.");
+
+      // The question was spoken, recorded, and the execution parked.
+      const transcript = await harness.persistence.listTranscript("conv-1");
+      expect(transcript.map((e) => e.toString())).toEqual([
+        "al: Book me a flight.",
+        "Jarvis: Which airport would you like to fly from?",
+      ]);
+      expect(harness.tts.requests.map((r) => r.text)).toEqual([
+        "Which airport would you like to fly from?",
+      ]);
+
+      // The user's answer resumes the same coordination instead of starting a
+      // fresh generation, and the final answer is recorded.
+      await speak(harness, "alice", "CDG.");
+
+      const finalTranscript = await harness.persistence.listTranscript("conv-1");
+      expect(finalTranscript.map((e) => e.toString())).toEqual([
+        "al: Book me a flight.",
+        "Jarvis: Which airport would you like to fly from?",
+        "al: CDG.",
+        "Jarvis: Booking your flight from CDG.",
+      ]);
+      const generations = await harness.persistence.listGenerations("conv-1");
+      expect(generations.map((g) => [g.agentName, g.text, g.status])).toEqual([
+        ["Jarvis", "Which airport would you like to fly from?", "completed"],
+        ["Jarvis", "Booking your flight from CDG.", "completed"],
+      ]);
+    });
+
+    test("speech while waiting for an answer resumes the coordination instead of interrupting it", async () => {
+      let calls = 0;
+      const harness = await setupRoster({
+        coordinatorScript: async function* () {
+          const n = calls++;
+          if (n === 0) {
+            yield { type: "delta", content: "Which city? " };
+            yield {
+              type: "tool_call",
+              id: "call_1",
+              name: "delegate",
+              arguments: JSON.stringify({ action: "user", question: "Which city?" }),
+            };
+            yield { type: "done" };
+            return;
+          }
+          yield { type: "delta", content: "Flying to London. " };
+          yield { type: "done" };
+        },
+        scripts: {},
+      });
+
+      await speak(harness, "alice", "Book a flight.");
+
+      // The participant starts speaking while the question is pending. This
+      // is the answer, not a barge-in: nothing is interrupted.
+      harness.conversation.listen({ userId: "alice", audio: new Uint8Array([2, 2]) });
+      harness.stt.sessions[0]!.emitFinal("London.");
+      await harness.orchestrator.whenIdle();
+
+      const generations = await harness.persistence.listGenerations("conv-1");
+      // The question generation completed; the resumed answer completed.
+      // Nothing was cancelled.
+      expect(generations.map((g) => g.status)).toEqual(["completed", "completed"]);
+      expect(generations.at(-1)?.text).toBe("Flying to London.");
+      expect(generations.filter((g) => g.status === "cancelled")).toHaveLength(0);
+    });
+
+    test("delegates to a registered coordination and merges its output", async () => {
+      const resolveLlm = new FakeLLM(respond("The flight departs at 3pm."));
+      const harness = await setupRoster({
+        coordinatorScript: async function* (request) {
+          if (request.messages.at(-1)?.role === "tool") {
+            yield { type: "delta", content: "Your flight is confirmed." };
+            yield { type: "done" };
+            return;
+          }
+          yield {
+            type: "tool_call",
+            id: "call_1",
+            name: "delegate",
+            arguments: JSON.stringify({
+              action: "coordination",
+              coordination: "resolve-details",
+              input: { prompt: "Find the flight details." },
+            }),
+          };
+          yield { type: "done" };
+        },
+        scripts: {},
+        coordinations: [
+          { name: "resolve-details", prompt: "You resolve details.", llm: resolveLlm },
+        ],
+      });
+
+      await speak(harness, "alice", "Plan my trip.");
+
+      // The sub-coordination ran on its own LLM with its own prompt and input.
+      expect(resolveLlm.requests).toHaveLength(1);
+      expect(resolveLlm.requests[0]!.messages[0]).toEqual({
+        role: "system",
+        name: "resolve-details",
+        content: "You resolve details.",
+      });
+      expect(resolveLlm.requests[0]!.messages.at(-1)).toEqual({
+        role: "user",
+        content: JSON.stringify({ prompt: "Find the flight details." }),
+      });
+
+      // Its output came back as the delegate tool result, and the understand
+      // coordination merged it into the final answer.
+      expect(harness.llm.requests).toHaveLength(2);
+      expect(harness.llm.requests[1]!.messages.at(-1)).toEqual({
+        role: "tool",
+        toolCallId: "call_1",
+        name: "delegate",
+        content: JSON.stringify("The flight departs at 3pm."),
+      });
+      const transcript = await harness.persistence.listTranscript("conv-1");
+      expect(transcript.at(-1)?.toString()).toBe("Jarvis: Your flight is confirmed.");
+    });
+
+    test("a suspension inside a nested coordination resumes both frames", async () => {
+      let resolveCalls = 0;
+      const resolveLlm = new FakeLLM(async function* () {
+        const n = resolveCalls++;
+        if (n === 0) {
+          yield { type: "delta", content: "Which city? " };
+          yield {
+            type: "tool_call",
+            id: "call_u1",
+            name: "delegate",
+            arguments: JSON.stringify({ action: "user", question: "Which city?" }),
+          };
+          yield { type: "done" };
+          return;
+        }
+        yield { type: "delta", content: "CDG flight found." };
+        yield { type: "done" };
+      });
+      const harness = await setupRoster({
+        coordinatorScript: async function* (request) {
+          if (request.messages.at(-1)?.role === "tool") {
+            yield { type: "delta", content: "Final: flight at 3pm." };
+            yield { type: "done" };
+            return;
+          }
+          yield {
+            type: "tool_call",
+            id: "call_1",
+            name: "delegate",
+            arguments: JSON.stringify({
+              action: "coordination",
+              coordination: "resolve-details",
+              input: { prompt: "Find flights." },
+            }),
+          };
+          yield { type: "done" };
+        },
+        scripts: {},
+        coordinations: [
+          { name: "resolve-details", prompt: "You resolve details.", llm: resolveLlm },
+        ],
+      });
+
+      await speak(harness, "alice", "Book my flight.");
+
+      // The nested coordination asked the question; the whole stack parked.
+      const transcript = await harness.persistence.listTranscript("conv-1");
+      expect(transcript.map((e) => e.toString())).toEqual([
+        "al: Book my flight.",
+        "Jarvis: Which city?",
+      ]);
+      expect(resolveLlm.requests).toHaveLength(1);
+      expect(harness.llm.requests).toHaveLength(1);
+
+      // The answer resumes the innermost frame; its output propagates back
+      // through the parent frame to the final merged answer.
+      await speak(harness, "alice", "Paris.");
+
+      expect(resolveLlm.requests).toHaveLength(2);
+      expect(harness.llm.requests).toHaveLength(2);
+      const finalTranscript = await harness.persistence.listTranscript("conv-1");
+      expect(finalTranscript.map((e) => e.toString())).toEqual([
+        "al: Book my flight.",
+        "Jarvis: Which city?",
+        "al: Paris.",
+        "Jarvis: Final: flight at 3pm.",
+      ]);
+      const generations = await harness.persistence.listGenerations("conv-1");
+      expect(generations.map((g) => [g.agentName, g.text, g.status])).toEqual([
+        ["Jarvis", "Which city?", "completed"],
+        ["Jarvis", "Final: flight at 3pm.", "completed"],
+      ]);
+    });
+
+    test("the step budget guards runaway delegation", async () => {
+      const harness = await setupRoster({
+        coordinatorScript: async function* (request) {
+          if (request.messages.at(-1)?.role === "tool") {
+            yield { type: "delta", content: "Done." };
+            yield { type: "done" };
+            return;
+          }
+          yield {
+            type: "tool_call",
+            id: "call_1",
+            name: "delegate",
+            arguments: JSON.stringify({
+              action: "coordination",
+              coordination: "understand",
+              input: { prompt: "Again." },
+            }),
+          };
+          yield { type: "done" };
+        },
+        scripts: {},
+        maxCoordinationSteps: 3,
+      });
+      const errors: Error[] = [];
+      harness.conversation.on("error", (payload) => errors.push(payload.error));
+
+      await speak(harness, "alice", "Loop me.");
+
+      // The self-delegation loop was cut off by the budget, surfaced as an
+      // error instead of hanging forever.
+      expect(errors.length).toBeGreaterThan(0);
+      expect(errors[0]?.message).toMatch(/coordination steps/);
+    });
+
+    test("completes directly with a structured answer", async () => {
+      const harness = await setupRoster({
+        coordinatorScript: async function* () {
+          yield { type: "delta", content: "Here is the answer. " };
+          yield {
+            type: "tool_call",
+            id: "call_1",
+            name: "delegate",
+            arguments: JSON.stringify({
+              action: "complete",
+              output: "The weather is sunny.",
+            }),
+          };
+          yield { type: "done" };
+        },
+        scripts: {},
+      });
+
+      await speak(harness, "alice", "What is the weather?");
+
+      // The narration plus the complete output form the final answer.
+      const generations = await harness.persistence.listGenerations("conv-1");
+      expect(generations[0]?.text).toBe("Here is the answer. The weather is sunny.");
+      expect(harness.tts.requests.map((r) => r.text)).toEqual([
+        "Here is the answer.",
+        "The weather is sunny.",
+      ]);
     });
 
     test("rehydrates history without sub-generations", async () => {

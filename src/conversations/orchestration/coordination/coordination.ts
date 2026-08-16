@@ -299,19 +299,25 @@ export class Coordination {
     }
     state.messages.push(...this.runtime.history);
     if (input !== undefined) {
-      state.messages.push({ role: "user", content: String(input) });
+      state.messages.push({
+        role: "user",
+        content: typeof input === "string" ? input : JSON.stringify(input),
+      });
     }
     return this.loop(state);
   }
 
   /** Resume a suspended state with the user's answer. */
   async resume(state: CoordinationState, answer: string): Promise<unknown> {
+    // The pre-suspension narration was already recorded as the question.
+    state.narration = "";
     state.messages.push({ role: "user", content: answer });
     return this.loop(state);
   }
 
   /** Continue a suspended state with an injected message (e.g. a sub-result). */
   async continueWith(state: CoordinationState, message: LLMMessage): Promise<unknown> {
+    state.narration = "";
     state.messages.push(message);
     return this.loop(state);
   }
@@ -364,7 +370,22 @@ export class Coordination {
           toolCalls,
         });
         for (const call of toolCalls) {
-          const action = parseDelegateAction(call.arguments);
+          let action: DelegateAction;
+          try {
+            action = parseDelegateAction(call.arguments);
+          } catch (error) {
+            // Malformed arguments: report to the coordination's LLM so it can
+            // recover instead of crashing the run.
+            state.messages.push({
+              role: "tool",
+              toolCallId: call.id,
+              name: "delegate",
+              content: JSON.stringify({
+                error: error instanceof Error ? error.message : String(error),
+              }),
+            });
+            continue;
+          }
           switch (action.type) {
             case "agents": {
               const results = await this.runtime.delegateAgentTasks(action.tasks);

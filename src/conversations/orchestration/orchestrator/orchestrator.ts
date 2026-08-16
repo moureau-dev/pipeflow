@@ -10,14 +10,26 @@ import type {
 import type { STT, STTSession } from "../../../providers/stt/types";
 import type { TTS } from "../../../providers/tts/types";
 import type { AudioChunk, Generation, ToolCallResult, Turn, UserId } from "../../types";
+import {
+  Coordination,
+  CoordinationBudgetExceeded,
+  CoordinationCancelled,
+  CoordinationSuspension,
+  type CoordinationOptions,
+  type CoordinationRuntime,
+  type DelegatedTask,
+  type DelegationResult,
+  type PendingFrame,
+} from "../coordination/coordination";
 
 export interface OrchestratorOptions {
   conversation: Conversation;
   /**
-   * The agents the coordinator routes turns to. The first agent is the
-   * default (used when no agent is addressed by name or alias). Omit for
-   * transcription-only mode (audio in, turns and transcripts out — no LLM
-   * or TTS required).
+   * The agents the orchestrator routes turns to. With more than one agent,
+   * unaddressed turns run through the built-in `understand` coordination,
+   * which can delegate to agents, ask the user, or answer directly. Omit
+   * for transcription-only mode (audio in, turns and transcripts out — no
+   * LLM or TTS required).
    */
   agents?: Agent[];
   /** Defaults to the first agent's LLM. */
@@ -31,6 +43,10 @@ export interface OrchestratorOptions {
   toolTimeoutMs?: number;
   /** Safety bound on tool-call round trips per generation. */
   maxToolIterations?: number;
+  /** Additional coordinations the runtime can delegate to. */
+  coordinations?: CoordinationOptions[];
+  /** Safety bound on LLM reasoning steps per coordination execution. */
+  maxCoordinationSteps?: number;
   temperature?: number;
   maxTokens?: number;
 }
@@ -47,17 +63,13 @@ interface ResolvedToolCall {
   error?: string;
 }
 
-/** One task in a coordinator `dispatch` tool call. */
-interface DispatchTask {
-  agent: string;
-  prompt: string;
-}
-
-/** The outcome of one dispatched sub-generation. */
-interface SubGenerationResult {
-  agent: string;
-  text: string;
-  error?: string;
+/** A coordination execution parked while waiting for the user to answer. */
+interface PendingExecution {
+  /** Execution stack, outermost frame first. */
+  frames: PendingFrame[];
+  question: string;
+  /** Coordination step count so the budget survives the suspension. */
+  stepCount: number;
 }
 
 const MONTHS = [
@@ -109,72 +121,49 @@ export function pickAgent(agents: readonly Agent[], text: string): Agent | null 
 }
 
 /**
- * The tool definition that lets the coordinator decompose a request into
- * subtasks for the other agents. Names and aliases are offered as an enum so
- * the LLM picks a real roster member.
+ * Like `pickAgent` but without the default: only returns an agent the turn
+ * explicitly addresses by name or alias.
  */
-function dispatchToolDefinition(agents: readonly Agent[]): LLMToolDefinition {
-  const coordinator = agents[0];
-  const targets = agents
-    .filter((agent) => agent !== coordinator)
-    .map((agent) => [agent.name, ...agent.aliases])
-    .flat();
-  return {
-    name: "dispatch",
-    description:
-      "Decompose the user's request into subtasks and assign each to another agent. " +
-      "The named agent executes its task with its own tools and context, and the results are " +
-      "returned to you to compose the final answer. Use this when a request spans multiple " +
-      "domains and several agents should work on it together.",
-    parameters: {
-      type: "object",
-      properties: {
-        tasks: {
-          type: "array",
-          description: "Subtasks, each handled by one agent.",
-          items: {
-            type: "object",
-            properties: {
-              agent: {
-                type: "string",
-                description: "Agent name or alias from the roster.",
-                enum: targets,
-              },
-              prompt: {
-                type: "string",
-                description: "Self-contained instruction for that agent.",
-              },
-            },
-            required: ["agent", "prompt"],
-          },
-        },
-      },
-      required: ["tasks"],
-    },
-  };
+function findAddressedAgent(agents: readonly Agent[], text: string): Agent | null {
+  const normalized = text.toLowerCase();
+  for (const agent of agents) {
+    if (agent.name && normalized.includes(agent.name.toLowerCase())) return agent;
+    for (const alias of agent.aliases) {
+      if (normalized.includes(alias.toLowerCase())) return agent;
+    }
+  }
+  return null;
 }
 
-function parseDispatchArguments(argumentsJson: string): DispatchTask[] {
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(argumentsJson);
-  } catch {
-    throw new Error("dispatch arguments must be valid JSON");
-  }
-  const tasks = (parsed as { tasks?: unknown } | null)?.tasks;
-  if (!Array.isArray(tasks) || tasks.length === 0) {
-    throw new Error('dispatch requires a non-empty "tasks" array');
-  }
-  return tasks.map((task, index) => {
-    const record = (task ?? {}) as { agent?: unknown; prompt?: unknown };
-    if (typeof record.agent !== "string" || record.agent.trim() === "") {
-      throw new Error(`dispatch task ${index + 1} requires an agent name`);
-    }
-    if (typeof record.prompt !== "string" || record.prompt.trim() === "") {
-      throw new Error(`dispatch task ${index + 1} requires a prompt`);
-    }
-    return { agent: record.agent.trim(), prompt: record.prompt.trim() };
-  });
+/** The built-in coordinator: understands the request and decides what's next. */
+function buildUnderstandPrompt(agents: readonly Agent[]): string {
+  const roster = agents
+    .map((agent) => {
+      const aliases =
+        agent.aliases.length > 0 ? ` (aliases: ${agent.aliases.join(", ")})` : "";
+      return `- ${agent.name}${aliases}`;
+    })
+    .join("\n");
+  return `You are the conversation coordinator.
+
+Your job is to understand what the user is trying to accomplish and decide what
+should happen next. You never perform domain work yourself.
+
+The available agents are:
+${roster}
+
+Decide the best next step and take exactly one:
+- delegate to one or more agents ("agents"), each with a self-contained prompt
+  describing exactly what to do and any context they need;
+- pass the work to another coordination ("coordination");
+- ask the user a clarifying question ("user") when the request is ambiguous or
+  missing critical information — speak the question naturally, as part of your
+  narration;
+- answer directly ("complete") when you have everything you need.
+
+When you delegate, briefly narrate what you are doing, wait for the results,
+then compose a single concise spoken answer and complete. Do not narrate your
+internal reasoning.`;
 }
 
 /**
@@ -202,12 +191,20 @@ export class Orchestrator {
   private readonly persistence: Persistence | undefined;
   private readonly toolTimeoutMs: number;
   private readonly maxToolIterations: number;
+  private readonly maxCoordinationSteps: number;
+  private readonly coordinations: Coordination[];
+  private readonly understand: Coordination | null;
   private readonly temperature: number | undefined;
   private readonly maxTokens: number | undefined;
 
   private started = false;
   private generating = false;
   private epoch = 0;
+  private speechEpoch = 0;
+  private coordinationEpoch = 0;
+  private coordinationStepCount = 0;
+  private coordinationRunId = "";
+  private pendingExecution: PendingExecution | null = null;
   private readonly unsubscribers: (() => void)[] = [];
   private readonly sttSessions = new Map<UserId, SttSessionEntry>();
   private readonly history: LLMMessage[] = [];
@@ -243,8 +240,29 @@ export class Orchestrator {
     this.persistence = options.persistence;
     this.toolTimeoutMs = options.toolTimeoutMs ?? 30_000;
     this.maxToolIterations = options.maxToolIterations ?? 10;
+    this.maxCoordinationSteps = options.maxCoordinationSteps ?? 20;
     this.temperature = options.temperature;
     this.maxTokens = options.maxTokens;
+
+    // With a roster, the built-in `understand` coordination runs unaddressed
+    // turns: it decides whether to delegate to agents, ask the user, or
+    // answer directly. Extra coordinations from options are registered too.
+    const coordinationOptions: CoordinationOptions[] = [...(options.coordinations ?? [])];
+    if (agents.length > 1) {
+      const alreadyDefined = coordinationOptions.some((c) => c.name === "understand");
+      if (!alreadyDefined) {
+        coordinationOptions.unshift({
+          name: "understand",
+          prompt: buildUnderstandPrompt(agents),
+        });
+      }
+    }
+    this.coordinations = coordinationOptions.map(
+      (coordinationOptionsItem) =>
+        new Coordination(coordinationOptionsItem, this.coordinationRuntime()),
+    );
+    this.understand =
+      this.coordinations.find((coordination) => coordination.name === "understand") ?? null;
   }
 
   /**
@@ -310,6 +328,8 @@ export class Orchestrator {
     if (!this.started) return;
     this.started = false;
     this.epoch++;
+    this.speechEpoch++;
+    this.pendingExecution = null;
     this.stopLlms();
     this.tts?.stop();
     this.cancelToolWaiters("conversation stopped");
@@ -368,6 +388,14 @@ export class Orchestrator {
     }
     entry.session.write(payload.audio.data);
 
+    if (this.pendingExecution) {
+      // The participant is answering a pending question — this audio is the
+      // answer, not an interruption. Stop the question's playback only; the
+      // coordination stays parked and resumes on the final transcript.
+      this.stopSpeech();
+      return;
+    }
+
     // Barge-in: a participant speaks while the agent is responding (or about
     // to). The interrupting audio is already queued to STT above.
     if (this.pendingGenerations > 0) {
@@ -423,9 +451,25 @@ export class Orchestrator {
         role: "user",
         content: `${turn.participantName}: ${turn.text}`,
       });
-      if (this.agents.length > 0) {
-        this.queueGeneration(turn);
+      if (this.agents.length === 0) return;
+
+      if (this.pendingExecution) {
+        // The user answered a pending coordination question: resume it with
+        // this turn instead of starting a fresh generation.
+        this.enqueueCoordinationRun(() => this.resumeExecution(turn));
+        return;
       }
+
+      if (this.agents.length === 1 || findAddressedAgent(this.agents, turn.text)) {
+        // Single-agent conversations, and turns that explicitly address an
+        // agent by name/alias, route straight to that agent.
+        this.queueGeneration(turn);
+        return;
+      }
+
+      // Otherwise the built-in `understand` coordination decides: delegate to
+      // agents, ask the user, or answer directly.
+      this.enqueueCoordinationRun(() => this.runDefaultCoordination(turn));
     } finally {
       this.pendingTurns--;
     }
@@ -433,10 +477,19 @@ export class Orchestrator {
 
   private onInterrupt(): void {
     this.epoch++;
+    this.speechEpoch++;
+    this.pendingExecution = null;
     this.stopLlms();
     this.tts?.stop();
     this.cancelToolWaiters("interrupted");
     this.speechBuffer = "";
+  }
+
+  /** Stop the current TTS playback without cancelling the generation. */
+  private stopSpeech(): void {
+    this.speechEpoch++;
+    this.speechBuffer = "";
+    this.tts?.stop();
   }
 
   /** Cancel every LLM in play: the shared one and each agent's own. */
@@ -522,12 +575,6 @@ export class Orchestrator {
       description: tool.description,
       parameters: tool.parameters ?? { type: "object", properties: {} },
     }));
-    // The coordinator (first agent in the roster) can decompose a request
-    // across the other agents: dispatched tasks run as sub-generations and
-    // their results come back here as the tool result.
-    if (this.agents.length > 1 && agent === this.agents[0]) {
-      definitions.push(dispatchToolDefinition(this.agents));
-    }
 
     const messages: LLMMessage[] = [];
     if (agent.context) {
@@ -574,7 +621,7 @@ export class Orchestrator {
           // and resume once they are resolved.
           this.flushSpeech();
           messages.push({ role: "assistant", name: agent.name, content: text, toolCalls });
-          const results = await this.resolveToolCalls(toolCalls, epoch, generationId);
+          const results = await this.resolveToolCalls(toolCalls, epoch);
           if (this.epoch !== epoch) return;
           for (const result of results) {
             messages.push({
@@ -629,18 +676,9 @@ export class Orchestrator {
   private async resolveToolCalls(
     calls: LLMToolCall[],
     epoch: number,
-    parentGenerationId?: string,
   ): Promise<ResolvedToolCall[]> {
-    const resolutions = calls.map((call) => {
-      // Dispatch is Pipeflow-owned: the coordinator's sub-generations run
-      // here instead of being handed to the application.
-      if (call.name === "dispatch" && parentGenerationId !== undefined) {
-        return this.runDispatch(call, epoch, parentGenerationId);
-      }
-      return this.waitForToolResult(call.id, epoch);
-    });
+    const resolutions = calls.map((call) => this.waitForToolResult(call.id, epoch));
     for (const call of calls) {
-      if (call.name === "dispatch") continue; // never surfaced to the app
       let args: unknown;
       try {
         args = JSON.parse(call.arguments);
@@ -667,37 +705,224 @@ export class Orchestrator {
   }
 
   // -------------------------------------------------------------------------
-  // Dispatch (coordinator → sub-agents)
+  // Coordination runtime
   // -------------------------------------------------------------------------
 
   /**
-   * Run a coordinator `dispatch` call: parse the tasks, execute each as a
-   * sub-generation (in parallel), surface their outputs in the transcript,
-   * and return the aggregated results as the tool result for the coordinator
-   * to compose the final answer.
+   * The runtime the coordinations reason against. Binds the coordination
+   * primitives (delegate to agents, ask the user, speech, budget, cancellation)
+   * to the orchestrator's machinery without coupling `Coordination` to it.
    */
-  private async runDispatch(
-    call: LLMToolCall,
-    epoch: number,
-    parentGenerationId: string,
-  ): Promise<ResolvedToolCall> {
-    let tasks: DispatchTask[];
+  private coordinationRuntime(): CoordinationRuntime {
+    const orchestrator = this;
+    return {
+      // Getters: read the current state at call time (the coordinations are
+      // built after the runtime object is created).
+      get agents() {
+        return orchestrator.agents;
+      },
+      get coordinations() {
+        return orchestrator.coordinations;
+      },
+      get llm() {
+        return orchestrator.llm!;
+      },
+      get history() {
+        return orchestrator.history;
+      },
+      delegateAgentTasks: (tasks) => this.delegateAgentTasks(tasks),
+      askUser: (frame, question) => this.askUser(frame, question),
+      onDelta: (delta) => this.feedDelta(delta),
+      flushSpeech: () => this.flushSpeech(),
+      speak: (sentence) => this.speak(sentence),
+      isCancelled: () => this.epoch !== this.coordinationEpoch,
+      checkBudget: () => this.checkCoordinationBudget(),
+    };
+  }
+
+  /** Serialize coordination runs with agent generations (one track at a time). */
+  private enqueueCoordinationRun(run: () => Promise<void>): void {
+    this.pendingGenerations++;
+    this.generationChain = this.generationChain.then(async () => {
+      this.generating = true;
+      try {
+        await run();
+      } finally {
+        this.generating = false;
+        this.pendingGenerations--;
+      }
+    });
+  }
+
+  /**
+   * Run the built-in `understand` coordination on an unaddressed turn. A
+   * streaming generation is opened for the conversation's default agent; the
+   * coordination's final answer (or question) completes it.
+   */
+  private async runDefaultCoordination(turn: Turn): Promise<void> {
+    const understand = this.understand;
+    if (!understand || !this.llm) return;
+    this.coordinationEpoch = this.epoch;
+    this.coordinationStepCount = 0;
+    this.coordinationRunId = crypto.randomUUID();
+    await this.conversation.pushGeneration({
+      id: this.coordinationRunId,
+      conversationId: this.conversation.id,
+      agentName: this.agents[0]!.name,
+      text: "",
+      status: "streaming",
+      startedAt: Date.now(),
+    });
+
     try {
-      tasks = parseDispatchArguments(call.arguments);
+      // The current turn is already in history, so no separate input message.
+      const output = await understand.run();
+      await this.finalizeCoordinationOutput(String(output));
     } catch (error) {
-      return {
-        id: call.id,
-        name: "dispatch",
-        error: error instanceof Error ? error.message : String(error),
-      };
+      if (error instanceof CoordinationSuspension) {
+        await this.recordSuspension(error);
+      } else if (error instanceof CoordinationCancelled) {
+        // Discarded by an interrupt — nothing to finalize.
+      } else {
+        this.emitCoordinationError(error);
+      }
+    }
+  }
+
+  /**
+   * Resume a parked coordination with the user's answer, propagating the
+   * result back up the frame stack to the outermost coordination.
+   */
+  private async resumeExecution(turn: Turn): Promise<void> {
+    const pending = this.pendingExecution;
+    if (!pending) return;
+    this.pendingExecution = null;
+    this.coordinationEpoch = this.epoch;
+    this.coordinationStepCount = pending.stepCount;
+    this.coordinationRunId = crypto.randomUUID();
+    await this.conversation.pushGeneration({
+      id: this.coordinationRunId,
+      conversationId: this.conversation.id,
+      agentName: this.agents[0]!.name,
+      text: "",
+      status: "streaming",
+      startedAt: Date.now(),
+    });
+
+    const frames = [...pending.frames]; // outermost first
+    const innermost = frames.pop();
+    if (!innermost) return;
+
+    let result: unknown;
+    try {
+      result = await innermost.coordination.resume(innermost.state, turn.text);
+    } catch (error) {
+      if (error instanceof CoordinationSuspension) {
+        error.frames.unshift(...frames);
+        await this.recordSuspension(error);
+      } else if (!(error instanceof CoordinationCancelled)) {
+        this.emitCoordinationError(error);
+      }
+      return;
     }
 
+    // Feed the result back into each remaining parent frame, innermost first.
+    while (frames.length > 0) {
+      const parent = frames.pop()!;
+      const toolCallId = parent.state.pendingToolCallId ?? crypto.randomUUID();
+      try {
+        result = await parent.coordination.continueWith(parent.state, {
+          role: "tool",
+          toolCallId,
+          name: "delegate",
+          content: JSON.stringify(result),
+        });
+      } catch (error) {
+        if (error instanceof CoordinationSuspension) {
+          error.frames.unshift(...frames);
+          await this.recordSuspension(error);
+        } else if (!(error instanceof CoordinationCancelled)) {
+          this.emitCoordinationError(error);
+        }
+        return;
+      }
+    }
+
+    await this.finalizeCoordinationOutput(String(result));
+  }
+
+  /** Complete the current generation and record the coordination's answer. */
+  private async finalizeCoordinationOutput(text: string): Promise<void> {
+    this.flushSpeech();
+    await this.speechChain;
+    if (this.epoch !== this.coordinationEpoch) return;
+    await this.conversation.completeGeneration(text);
+    await this.conversation.pushTranscript({
+      speaker: this.agents[0]!.name,
+      speakerKind: "agent",
+      text,
+    });
+    this.history.push({
+      role: "assistant",
+      name: this.agents[0]!.name,
+      content: text,
+    });
+  }
+
+  /** Park a suspended coordination: record the question and store the stack. */
+  private async recordSuspension(suspension: CoordinationSuspension): Promise<void> {
+    await this.conversation.completeGeneration(suspension.question);
+    await this.conversation.pushTranscript({
+      speaker: this.agents[0]!.name,
+      speakerKind: "agent",
+      text: suspension.question,
+    });
+    this.history.push({
+      role: "assistant",
+      name: this.agents[0]!.name,
+      content: suspension.question,
+    });
+    this.pendingExecution = {
+      frames: suspension.frames,
+      question: suspension.question,
+      stepCount: this.coordinationStepCount,
+    };
+  }
+
+  /** Throw the suspension that parks a coordination waiting for the user. */
+  private askUser(frame: PendingFrame, question: string): never {
+    // Recording (transcript, history, generation) happens when the suspension
+    // is caught at the top of the stack, where the full frame set is known.
+    throw new CoordinationSuspension([frame], question);
+  }
+
+  /** Enforce the per-execution reasoning step budget. */
+  private checkCoordinationBudget(): void {
+    this.coordinationStepCount++;
+    if (this.coordinationStepCount > this.maxCoordinationSteps) {
+      throw new CoordinationBudgetExceeded(
+        `exceeded ${this.maxCoordinationSteps} coordination steps`,
+      );
+    }
+  }
+
+  private emitCoordinationError(error: unknown): void {
+    this.conversation.emit("error", {
+      conversationId: this.conversation.id,
+      error: error instanceof Error ? error : new Error(String(error)),
+    });
+  }
+
+  /** Run delegated agent tasks in parallel and surface their work. */
+  private async delegateAgentTasks(tasks: DelegatedTask[]): Promise<DelegationResult[]> {
     const results = await Promise.all(
-      tasks.map((task) => this.runSubGeneration(epoch, task, parentGenerationId)),
+      tasks.map((task) =>
+        this.runSubGeneration(this.coordinationEpoch, task, this.coordinationRunId),
+      ),
     );
 
-    if (this.epoch !== epoch) {
-      return { id: call.id, name: "dispatch", error: "interrupted" };
+    if (this.epoch !== this.coordinationEpoch) {
+      return results.map(({ agent, text, error }) => ({ agent, text, error }));
     }
 
     // Surface each specialist's work in the transcript, in task order.
@@ -710,12 +935,7 @@ export class Orchestrator {
         });
       }
     }
-
-    return {
-      id: call.id,
-      name: "dispatch",
-      result: results.map(({ agent, text, error }) => ({ agent, text, error })),
-    };
+    return results;
   }
 
   /**
@@ -725,9 +945,9 @@ export class Orchestrator {
    */
   private async runSubGeneration(
     epoch: number,
-    task: DispatchTask,
+    task: DelegatedTask,
     parentGenerationId: string,
-  ): Promise<SubGenerationResult> {
+  ): Promise<DelegationResult> {
     const agent = this.findAgent(task.agent);
     if (!agent) {
       return { agent: task.agent, text: "", error: `Unknown agent "${task.agent}"` };
@@ -849,7 +1069,7 @@ export class Orchestrator {
   private async cancelSubGeneration(
     id: string,
     agentName: string,
-  ): Promise<SubGenerationResult> {
+  ): Promise<DelegationResult> {
     await this.conversation.cancelSubGeneration(id);
     return { agent: agentName, text: "", error: "interrupted" };
   }
@@ -921,11 +1141,20 @@ export class Orchestrator {
     const tts = this.tts;
     if (!tts) return;
     const epoch = this.epoch;
+    const speechEpoch = this.speechEpoch;
     this.speechChain = this.speechChain.then(async () => {
-      if (!this.started || this.epoch !== epoch) return;
+      if (!this.started || this.epoch !== epoch || this.speechEpoch !== speechEpoch) {
+        return;
+      }
       try {
         for await (const chunk of tts.stream({ text: sentence })) {
-          if (!this.started || this.epoch !== epoch) break;
+          if (
+            !this.started ||
+            this.epoch !== epoch ||
+            this.speechEpoch !== speechEpoch
+          ) {
+            break;
+          }
           this.conversation.pushAudio({
             data: chunk,
             timestamp: Date.now(),

@@ -84,6 +84,7 @@ export class Conversation {
     Set<(payload: never) => void>
   >();
   private readonly pendingToolCallsById = new Map<string, ToolCall>();
+  private readonly subGenerations = new Map<string, Generation>();
   private nextAudioSequence = 0;
 
   constructor(options: ConversationOptions) {
@@ -132,6 +133,13 @@ export class Conversation {
     const cancelled = this.cancelCurrentGeneration();
     if (cancelled) {
       await this.persistence?.appendGeneration(this.id, cancelled);
+    }
+    for (const sub of [...this.subGenerations.values()]) {
+      if (sub.status === "streaming") {
+        sub.status = "cancelled";
+        sub.endedAt = Date.now();
+        await this.persistence?.appendGeneration(this.id, sub);
+      }
     }
     await this.persistence?.finalizeConversation(this.id, Date.now());
     this.emit("stop", { conversationId: this.id });
@@ -313,6 +321,44 @@ export class Conversation {
       await this.persistence?.appendGeneration(this.id, generation);
       this.emitState();
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // Dispatched sub-generations
+  // -------------------------------------------------------------------------
+
+  /**
+   * Push a sub-generation: a task the coordinator dispatched to another
+   * agent. Unlike `pushGeneration`, it does not become the conversation's
+   * current generation, so parallel tasks don't clobber the coordinator's
+   * own in-flight generation.
+   */
+  async pushSubGeneration(generation: Generation): Promise<void> {
+    this.subGenerations.set(generation.id, generation);
+    this.emit("generation", { conversationId: this.id, generation });
+    await this.persistence?.appendGeneration(this.id, generation);
+    this.emitState();
+  }
+
+  /** Mark a dispatched sub-generation as completed with its final text. */
+  async completeSubGeneration(id: string, text?: string): Promise<void> {
+    const generation = this.subGenerations.get(id);
+    if (!generation || generation.status !== "streaming") return;
+    if (text !== undefined) generation.text = text;
+    generation.status = "completed";
+    generation.endedAt = Date.now();
+    await this.persistence?.appendGeneration(this.id, generation);
+    this.emitState();
+  }
+
+  /** Mark a dispatched sub-generation as cancelled (e.g. barge-in). */
+  async cancelSubGeneration(id: string): Promise<void> {
+    const generation = this.subGenerations.get(id);
+    if (!generation || generation.status !== "streaming") return;
+    generation.status = "cancelled";
+    generation.endedAt = Date.now();
+    await this.persistence?.appendGeneration(this.id, generation);
+    this.emitState();
   }
 
   /** The live in-memory transcript. */

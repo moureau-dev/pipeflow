@@ -61,6 +61,8 @@ interface GenerationRow {
   status: string;
   started_at: number;
   ended_at: number | null;
+  kind: string | null;
+  parent_generation_id: string | null;
 }
 
 /**
@@ -112,13 +114,15 @@ export class SQLitePersistence implements Persistence {
       );
 
       CREATE TABLE IF NOT EXISTS generations (
-        id              TEXT PRIMARY KEY,
-        conversation_id TEXT NOT NULL,
-        agent_name      TEXT NOT NULL,
-        text            TEXT NOT NULL,
-        status          TEXT NOT NULL,
-        started_at      INTEGER NOT NULL,
-        ended_at        INTEGER
+        id                  TEXT PRIMARY KEY,
+        conversation_id     TEXT NOT NULL,
+        agent_name          TEXT NOT NULL,
+        text                TEXT NOT NULL,
+        status              TEXT NOT NULL,
+        started_at          INTEGER NOT NULL,
+        ended_at            INTEGER,
+        kind                TEXT,
+        parent_generation_id TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_participants_conversation ON participants (conversation_id);
@@ -126,6 +130,21 @@ export class SQLitePersistence implements Persistence {
       CREATE INDEX IF NOT EXISTS idx_turns_conversation ON turns (conversation_id);
       CREATE INDEX IF NOT EXISTS idx_generations_conversation ON generations (conversation_id);
     `);
+
+    // Lightweight migration for databases created before the generation
+    // columns existed: CREATE TABLE IF NOT EXISTS leaves existing tables
+    // untouched, so add the missing columns when needed.
+    const generationColumns = new Set(
+      (this.db.query(`PRAGMA table_info(generations)`).all() as { name: string }[]).map(
+        (column) => column.name,
+      ),
+    );
+    if (!generationColumns.has("kind")) {
+      this.db.exec(`ALTER TABLE generations ADD COLUMN kind TEXT`);
+    }
+    if (!generationColumns.has("parent_generation_id")) {
+      this.db.exec(`ALTER TABLE generations ADD COLUMN parent_generation_id TEXT`);
+    }
   }
 
   close(): void {
@@ -297,8 +316,9 @@ export class SQLitePersistence implements Persistence {
   ): Promise<void> {
     this.db
       .query(
-        `INSERT OR REPLACE INTO generations (id, conversation_id, agent_name, text, status, started_at, ended_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO generations
+           (id, conversation_id, agent_name, text, status, started_at, ended_at, kind, parent_generation_id)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         generation.id,
@@ -308,6 +328,8 @@ export class SQLitePersistence implements Persistence {
         generation.status,
         generation.startedAt,
         generation.endedAt ?? null,
+        generation.kind ?? null,
+        generation.parentGenerationId ?? null,
       );
   }
 
@@ -325,6 +347,8 @@ export class SQLitePersistence implements Persistence {
       status: row.status as Generation["status"],
       startedAt: row.started_at,
       endedAt: row.ended_at ?? undefined,
+      kind: row.kind === "sub" ? "sub" : undefined,
+      parentGenerationId: row.parent_generation_id ?? undefined,
     }));
   }
 }

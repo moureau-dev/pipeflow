@@ -9,7 +9,7 @@ import type {
 } from "../../../providers/llm/types";
 import type { STT, STTSession } from "../../../providers/stt/types";
 import type { TTS } from "../../../providers/tts/types";
-import type { AudioChunk, ToolCallResult, Turn, UserId } from "../../types";
+import type { AudioChunk, Generation, ToolCallResult, Turn, UserId } from "../../types";
 
 export interface OrchestratorOptions {
   conversation: Conversation;
@@ -47,6 +47,47 @@ interface ResolvedToolCall {
   error?: string;
 }
 
+/** One task in a coordinator `dispatch` tool call. */
+interface DispatchTask {
+  agent: string;
+  prompt: string;
+}
+
+/** The outcome of one dispatched sub-generation. */
+interface SubGenerationResult {
+  agent: string;
+  text: string;
+  error?: string;
+}
+
+const MONTHS = [
+  "jan",
+  "feb",
+  "mar",
+  "apr",
+  "may",
+  "jun",
+  "jul",
+  "aug",
+  "sep",
+  "oct",
+  "nov",
+  "dec",
+];
+
+/**
+ * A human-readable "now" stamp appended to dispatched prompts so
+ * time-sensitive tasks (flights, meetings, deadlines) have temporal context.
+ */
+export function formatTimeContext(date = new Date()): string {
+  const day = date.getDate();
+  const month = MONTHS[date.getMonth()]!;
+  const year = date.getFullYear();
+  const hours = String(date.getHours()).padStart(2, "0");
+  const minutes = String(date.getMinutes()).padStart(2, "0");
+  return `Now it is ${day} ${month} ${year}, ${hours}:${minutes}.`;
+}
+
 /**
  * Pick the agent that should handle a turn.
  *
@@ -65,6 +106,75 @@ export function pickAgent(agents: readonly Agent[], text: string): Agent | null 
     }
   }
   return agents[0]!;
+}
+
+/**
+ * The tool definition that lets the coordinator decompose a request into
+ * subtasks for the other agents. Names and aliases are offered as an enum so
+ * the LLM picks a real roster member.
+ */
+function dispatchToolDefinition(agents: readonly Agent[]): LLMToolDefinition {
+  const coordinator = agents[0];
+  const targets = agents
+    .filter((agent) => agent !== coordinator)
+    .map((agent) => [agent.name, ...agent.aliases])
+    .flat();
+  return {
+    name: "dispatch",
+    description:
+      "Decompose the user's request into subtasks and assign each to another agent. " +
+      "The named agent executes its task with its own tools and context, and the results are " +
+      "returned to you to compose the final answer. Use this when a request spans multiple " +
+      "domains and several agents should work on it together.",
+    parameters: {
+      type: "object",
+      properties: {
+        tasks: {
+          type: "array",
+          description: "Subtasks, each handled by one agent.",
+          items: {
+            type: "object",
+            properties: {
+              agent: {
+                type: "string",
+                description: "Agent name or alias from the roster.",
+                enum: targets,
+              },
+              prompt: {
+                type: "string",
+                description: "Self-contained instruction for that agent.",
+              },
+            },
+            required: ["agent", "prompt"],
+          },
+        },
+      },
+      required: ["tasks"],
+    },
+  };
+}
+
+function parseDispatchArguments(argumentsJson: string): DispatchTask[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(argumentsJson);
+  } catch {
+    throw new Error("dispatch arguments must be valid JSON");
+  }
+  const tasks = (parsed as { tasks?: unknown } | null)?.tasks;
+  if (!Array.isArray(tasks) || tasks.length === 0) {
+    throw new Error('dispatch requires a non-empty "tasks" array');
+  }
+  return tasks.map((task, index) => {
+    const record = (task ?? {}) as { agent?: unknown; prompt?: unknown };
+    if (typeof record.agent !== "string" || record.agent.trim() === "") {
+      throw new Error(`dispatch task ${index + 1} requires an agent name`);
+    }
+    if (typeof record.prompt !== "string" || record.prompt.trim() === "") {
+      throw new Error(`dispatch task ${index + 1} requires a prompt`);
+    }
+    return { agent: record.agent.trim(), prompt: record.prompt.trim() };
+  });
 }
 
 /**
@@ -156,7 +266,12 @@ export class Orchestrator {
       > = [
         ...turns.map((turn) => ({ at: turn.startedAt, kind: "turn" as const, turn })),
         ...generations
-          .filter((generation) => generation.status === "completed")
+          // Sub-generations are summarized inside the coordinator's own
+          // answer, so only top-level responses rehydrate into history.
+          .filter(
+            (generation) =>
+              generation.status === "completed" && generation.kind !== "sub",
+          )
           .map((generation) => ({
             at: generation.startedAt,
             kind: "generation" as const,
@@ -392,8 +507,9 @@ export class Orchestrator {
     llm: LLM,
     tts: TTS,
   ): Promise<void> {
+    const generationId = crypto.randomUUID();
     await this.conversation.pushGeneration({
-      id: crypto.randomUUID(),
+      id: generationId,
       conversationId: this.conversation.id,
       agentName: agent.name,
       text: "",
@@ -406,6 +522,12 @@ export class Orchestrator {
       description: tool.description,
       parameters: tool.parameters ?? { type: "object", properties: {} },
     }));
+    // The coordinator (first agent in the roster) can decompose a request
+    // across the other agents: dispatched tasks run as sub-generations and
+    // their results come back here as the tool result.
+    if (this.agents.length > 1 && agent === this.agents[0]) {
+      definitions.push(dispatchToolDefinition(this.agents));
+    }
 
     const messages: LLMMessage[] = [];
     if (agent.context) {
@@ -448,10 +570,11 @@ export class Orchestrator {
 
         if (toolCalls.length > 0) {
           // Pause the response: let the narration finish, hand the calls to
-          // the application, and resume once they are resolved.
+          // the application (dispatch calls run sub-generations internally),
+          // and resume once they are resolved.
           this.flushSpeech();
           messages.push({ role: "assistant", name: agent.name, content: text, toolCalls });
-          const results = await this.resolveToolCalls(toolCalls, epoch);
+          const results = await this.resolveToolCalls(toolCalls, epoch, generationId);
           if (this.epoch !== epoch) return;
           for (const result of results) {
             messages.push({
@@ -506,9 +629,18 @@ export class Orchestrator {
   private async resolveToolCalls(
     calls: LLMToolCall[],
     epoch: number,
+    parentGenerationId?: string,
   ): Promise<ResolvedToolCall[]> {
-    const resolutions = calls.map((call) => this.waitForToolResult(call.id, epoch));
+    const resolutions = calls.map((call) => {
+      // Dispatch is Pipeflow-owned: the coordinator's sub-generations run
+      // here instead of being handed to the application.
+      if (call.name === "dispatch" && parentGenerationId !== undefined) {
+        return this.runDispatch(call, epoch, parentGenerationId);
+      }
+      return this.waitForToolResult(call.id, epoch);
+    });
     for (const call of calls) {
+      if (call.name === "dispatch") continue; // never surfaced to the app
       let args: unknown;
       try {
         args = JSON.parse(call.arguments);
@@ -532,6 +664,206 @@ export class Orchestrator {
         error: "error" in result ? result.error : undefined,
       };
     });
+  }
+
+  // -------------------------------------------------------------------------
+  // Dispatch (coordinator → sub-agents)
+  // -------------------------------------------------------------------------
+
+  /**
+   * Run a coordinator `dispatch` call: parse the tasks, execute each as a
+   * sub-generation (in parallel), surface their outputs in the transcript,
+   * and return the aggregated results as the tool result for the coordinator
+   * to compose the final answer.
+   */
+  private async runDispatch(
+    call: LLMToolCall,
+    epoch: number,
+    parentGenerationId: string,
+  ): Promise<ResolvedToolCall> {
+    let tasks: DispatchTask[];
+    try {
+      tasks = parseDispatchArguments(call.arguments);
+    } catch (error) {
+      return {
+        id: call.id,
+        name: "dispatch",
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+
+    const results = await Promise.all(
+      tasks.map((task) => this.runSubGeneration(epoch, task, parentGenerationId)),
+    );
+
+    if (this.epoch !== epoch) {
+      return { id: call.id, name: "dispatch", error: "interrupted" };
+    }
+
+    // Surface each specialist's work in the transcript, in task order.
+    for (const result of results) {
+      if (result.text && !result.error) {
+        await this.conversation.pushTranscript({
+          speaker: result.agent,
+          speakerKind: "agent",
+          text: result.text,
+        });
+      }
+    }
+
+    return {
+      id: call.id,
+      name: "dispatch",
+      result: results.map(({ agent, text, error }) => ({ agent, text, error })),
+    };
+  }
+
+  /**
+   * Execute one dispatched task as a sub-generation: the target agent's own
+   * LLM, context, and tools, running text-only (no TTS). The final text is
+   * returned so the coordinator can merge it into the spoken answer.
+   */
+  private async runSubGeneration(
+    epoch: number,
+    task: DispatchTask,
+    parentGenerationId: string,
+  ): Promise<SubGenerationResult> {
+    const agent = this.findAgent(task.agent);
+    if (!agent) {
+      return { agent: task.agent, text: "", error: `Unknown agent "${task.agent}"` };
+    }
+    const llm = agent.llm ?? this.llm;
+    if (!llm) {
+      return {
+        agent: agent.name,
+        text: "",
+        error: `Agent "${agent.name}" has no LLM configured`,
+      };
+    }
+
+    const id = crypto.randomUUID();
+    const generation: Generation = {
+      id,
+      conversationId: this.conversation.id,
+      agentName: agent.name,
+      text: "",
+      status: "streaming",
+      startedAt: Date.now(),
+      kind: "sub",
+      parentGenerationId,
+    };
+    await this.conversation.pushSubGeneration(generation);
+
+    const definitions: LLMToolDefinition[] = agent.tools.map((tool) => ({
+      name: tool.name,
+      description: tool.description,
+      parameters: tool.parameters ?? { type: "object", properties: {} },
+    }));
+
+    const messages: LLMMessage[] = [];
+    if (agent.context) {
+      messages.push({ role: "system", name: agent.name, content: agent.context });
+    }
+    messages.push(...this.history);
+    // The prompt carries a time stamp so time-sensitive tasks (flights,
+    // meetings, deadlines) don't reason about a stale "now".
+    messages.push({ role: "user", content: `${task.prompt}\n\n${formatTimeContext()}` });
+
+    let text = "";
+
+    try {
+      for (let iteration = 0; iteration < this.maxToolIterations; iteration++) {
+        if (this.epoch !== epoch) return this.cancelSubGeneration(id, agent.name);
+
+        const toolCalls: LLMToolCall[] = [];
+        let done = false;
+
+        for await (const event of llm.stream({
+          messages,
+          tools: definitions,
+          temperature: this.temperature,
+          maxTokens: this.maxTokens,
+        })) {
+          if (this.epoch !== epoch) return this.cancelSubGeneration(id, agent.name);
+          switch (event.type) {
+            case "delta":
+              text += event.content;
+              break;
+            case "tool_call":
+              toolCalls.push({
+                id: event.id,
+                name: event.name,
+                arguments: event.arguments,
+              });
+              break;
+            case "error":
+              throw event.error;
+            case "done":
+              done = true;
+          }
+        }
+
+        if (this.epoch !== epoch) return this.cancelSubGeneration(id, agent.name);
+
+        if (toolCalls.length > 0) {
+          messages.push({ role: "assistant", name: agent.name, content: text, toolCalls });
+          const results = await this.resolveToolCalls(toolCalls, epoch);
+          if (this.epoch !== epoch) return this.cancelSubGeneration(id, agent.name);
+          for (const result of results) {
+            messages.push({
+              role: "tool",
+              toolCallId: result.id,
+              name: result.name,
+              content: JSON.stringify(
+                result.error !== undefined ? { error: result.error } : result.result,
+              ),
+            });
+          }
+          continue;
+        }
+
+        if (done) break;
+      }
+
+      if (this.epoch !== epoch) return this.cancelSubGeneration(id, agent.name);
+
+      await this.conversation.completeSubGeneration(id, text);
+      return { agent: agent.name, text };
+    } catch (error) {
+      if (this.epoch !== epoch) return this.cancelSubGeneration(id, agent.name);
+      // Finalize the partial output so the persisted state stays consistent;
+      // the error travels back so the coordinator can recover gracefully.
+      await this.conversation.completeSubGeneration(id, text);
+      this.conversation.emit("error", {
+        conversationId: this.conversation.id,
+        error: error instanceof Error ? error : new Error(String(error)),
+      });
+      return {
+        agent: agent.name,
+        text,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+
+  private async cancelSubGeneration(
+    id: string,
+    agentName: string,
+  ): Promise<SubGenerationResult> {
+    await this.conversation.cancelSubGeneration(id);
+    return { agent: agentName, text: "", error: "interrupted" };
+  }
+
+  /** Resolve a task's agent by exact name or alias. */
+  private findAgent(nameOrAlias: string): Agent | null {
+    const normalized = nameOrAlias.trim().toLowerCase();
+    for (const agent of this.agents) {
+      if (agent.name.toLowerCase() === normalized) return agent;
+      for (const alias of agent.aliases) {
+        if (alias.toLowerCase() === normalized) return agent;
+      }
+    }
+    return null;
   }
 
   private waitForToolResult(id: string, _epoch: number): Promise<ToolCallResult> {

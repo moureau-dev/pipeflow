@@ -51,10 +51,18 @@ class FakeSTTSession implements STTSession {
 
 class FakeLLM implements LLM {
   readonly requests: LLMRequest[] = [];
+  constructor(
+    private readonly script?: (request: LLMRequest) => AsyncIterable<LLMEvent>,
+  ) {}
+
   async *stream(request: LLMRequest): AsyncGenerator<LLMEvent> {
     this.requests.push(request);
-    yield { type: "delta", content: "Got it!" };
-    yield { type: "done" };
+    if (this.script) {
+      yield* this.script(request);
+    } else {
+      yield { type: "delta", content: "Got it!" };
+      yield { type: "done" };
+    }
   }
   stop(): void {}
 }
@@ -266,6 +274,64 @@ describe("Conversations", () => {
     expect(transcript.map((entry) => entry.toString())).toEqual([
       "al: Ask the technical specialist to fix it.",
       "Technical Specialist: Got it!",
+    ]);
+  });
+
+  test("start() decomposes a turn across agents through the public API", async () => {
+    const stt = new FakeSTT();
+    const tts = new FakeTTS();
+    const coordinatorLlm = new FakeLLM(async function* (request) {
+      if (request.messages.at(-1)?.role === "tool") {
+        yield { type: "delta", content: "Done: flight found and calendar checked." };
+        yield { type: "done" };
+        return;
+      }
+      yield {
+        type: "tool_call",
+        id: "call_1",
+        name: "dispatch",
+        arguments: JSON.stringify({
+          tasks: [{ agent: "Calendar Agent", prompt: "Check Tuesday afternoon." }],
+        }),
+      };
+      yield { type: "done" };
+    });
+    const calendarLlm = new FakeLLM();
+    const api = conversations({ stt, tts });
+    const conversation = await api.create({
+      agents: [
+        new Agent({ name: "Jarvis", context: "You coordinate.", llm: coordinatorLlm }),
+        new Agent({
+          name: "Calendar Agent",
+          context: "You check calendars.",
+          llm: calendarLlm,
+        }),
+      ],
+    });
+    await conversation.participate({ userId: "alice", aliases: ["al"] });
+    await conversation.start();
+
+    conversation.listen({ userId: "alice", audio: new Uint8Array([1]) });
+    stt.sessions[0]!.emitFinal("Book a flight and check my calendar.");
+    await waitFor(() => calendarLlm.requests.length >= 1);
+    await waitFor(async () => (await api.transcript(conversation.id)).length >= 3);
+
+    // The coordinator dispatched, the specialist ran on its own LLM, and
+    // both turns and the merged answer landed in the transcript.
+    expect(coordinatorLlm.requests).toHaveLength(2);
+    expect(calendarLlm.requests).toHaveLength(1);
+    expect(String(calendarLlm.requests[0]!.messages.at(-1)?.content)).toContain(
+      "Check Tuesday afternoon.",
+    );
+    expect(String(calendarLlm.requests[0]!.messages.at(-1)?.content)).toMatch(
+      /Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.$/,
+    );
+
+    const transcript = await api.transcript(conversation.id);
+    expect(transcript.map((entry) => entry.toString())).toEqual([
+      "al: Book a flight and check my calendar.",
+      "Calendar Agent: Got it!",
+      "Jarvis: Done: flight found and calendar checked.",
     ]);
   });
 

@@ -413,6 +413,52 @@ const conversation =
 "Ask the technical specialist about X" is routed to the specialist; an
 unaddressed turn goes to the first agent in the roster.
 
+### Collaborative orchestration
+
+The first agent in the roster is also the **coordinator**. When a request spans
+several domains, it can decompose it into subtasks and dispatch each to the
+relevant agent, then merge the results into a single spoken answer:
+
+```text
+User: "Book a flight and check whether my calendar conflicts."
+              │
+              ▼
+        ┌────────────┐
+        │ Coordinator│
+        └─────┬──────┘
+              │
+       ┌──────┴───────┐
+       ▼              ▼
+   Travel Agent   Calendar Agent
+       │              │
+       └──────┬───────┘
+              ▼
+          Coordinator
+              │
+              ▼
+            User
+```
+
+Concretely, the coordinator's LLM is given a synthetic `dispatch` tool:
+
+```jsonc
+// emitted by the coordinator's LLM, intercepted by the orchestrator
+dispatch({
+  tasks: [
+    { agent: "Travel Agent", prompt: "Find flights Paris → London tomorrow morning." },
+    { agent: "Calendar Agent", prompt: "Check meetings on Tuesday afternoon." }
+  ]
+})
+```
+
+The orchestrator executes each task as a **sub-generation**: the target agent
+runs on its own LLM, context, and tools (which still execute in your backend),
+and every dispatched prompt is stamped with the current time so time-sensitive
+tasks reason about the right "now". Sub-agents are text-only — the coordinator
+narrates while they work and speaks the merged answer. Their work is recorded
+in the transcript and persisted as sub-generations; the conversation history
+keeps the coordinator's final answer.
+
 ```text
 Agent
  ├── context

@@ -50,6 +50,13 @@ export interface Generation {
   status: GenerationStatus;
   startedAt: number;
   endedAt?: number;
+  /**
+   * "sub" marks a task dispatched to another agent by the coordinator.
+   * Regular agent replies omit this field.
+   */
+  kind?: "sub";
+  /** For sub-generations: the id of the coordinator generation that dispatched them. */
+  parentGenerationId?: string;
 }
 
 // ---------------------------------------------------------------------------

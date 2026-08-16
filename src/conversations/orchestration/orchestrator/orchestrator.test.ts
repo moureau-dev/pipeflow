@@ -3,7 +3,7 @@ import { Agent } from "../../../agents/agent";
 import { Tool } from "../../../agents/tools/tools";
 import { Conversation } from "../../conversation/conversation";
 import { MemoryPersistence } from "../../../persistence/adapters/memory/memory";
-import { Orchestrator, pickAgent } from "./orchestrator";
+import { Orchestrator, pickAgent, formatTimeContext } from "./orchestrator";
 import type { AudioChunk, ToolCall, UserId } from "../../types";
 import type {
   LLM,
@@ -204,6 +204,58 @@ function respond(text: string): LLMScript {
     yield { type: "delta", content: text };
     yield { type: "done" };
   };
+}
+
+// ---------------------------------------------------------------------------
+// Multi-agent roster harness (coordinator + named specialists)
+// ---------------------------------------------------------------------------
+
+type RosterHarness = Harness & { llms: Map<string, FakeLLM> };
+
+function setupRoster(options: {
+  coordinatorScript: LLMScript;
+  scripts: Record<string, LLMScript>;
+  tools?: Record<string, Tool<never, unknown>[]>;
+}): Promise<RosterHarness> {
+  return (async () => {
+    const persistence = new MemoryPersistence();
+    const conversation = new Conversation({ id: "conv-1", persistence });
+    const stt = new FakeSTT();
+    const tts = new FakeTTS((text) => [new TextEncoder().encode(text)]);
+
+    const coordinatorLlm = new FakeLLM(options.coordinatorScript);
+    const llms = new Map<string, FakeLLM>([["Jarvis", coordinatorLlm]]);
+    const agents: Agent[] = [
+      new Agent({ name: "Jarvis", context: "Be concise.", llm: coordinatorLlm }),
+    ];
+    for (const [name, script] of Object.entries(options.scripts)) {
+      const llm = new FakeLLM(script);
+      llms.set(name, llm);
+      agents.push(
+        new Agent({
+          name,
+          context: `You are ${name}.`,
+          llm,
+          tools: options.tools?.[name],
+        }),
+      );
+    }
+
+    const orchestrator = new Orchestrator({
+      conversation,
+      agents,
+      llm: coordinatorLlm,
+      stt,
+      tts,
+      persistence,
+    });
+
+    conversation.start();
+    await conversation.participate({ userId: "alice", aliases: ["al"] });
+    await orchestrator.start();
+
+    return { conversation, orchestrator, llm: coordinatorLlm, stt, tts, persistence, llms };
+  })();
 }
 
 // ---------------------------------------------------------------------------
@@ -690,6 +742,418 @@ describe("Orchestrator", () => {
 
     test("returns null for an empty roster", () => {
       expect(pickAgent([], "anything")).toBeNull();
+    });
+  });
+
+  describe("dispatch", () => {
+    function coordinatorThatDispatches(tasksJson: string): LLMScript {
+      return async function* (request) {
+        if (request.messages.at(-1)?.role === "tool") {
+          yield { type: "delta", content: "I found a 3pm flight and your calendar is free." };
+          yield { type: "done" };
+          return;
+        }
+        yield { type: "delta", content: "Let me check both. " };
+        yield {
+          type: "tool_call",
+          id: "call_1",
+          name: "dispatch",
+          arguments: tasksJson,
+        };
+        yield { type: "done" };
+      };
+    }
+
+    test("decomposes a turn across specialist agents and merges the results", async () => {
+      const harness = await setupRoster({
+        coordinatorScript: coordinatorThatDispatches(
+          JSON.stringify({
+            tasks: [
+              { agent: "Travel Agent", prompt: "Find flights Paris to London tomorrow morning." },
+              { agent: "Calendar Agent", prompt: "Check meetings on Tuesday afternoon." },
+            ],
+          }),
+        ),
+        scripts: {
+          "Travel Agent": respond("Flight at 3pm."),
+          "Calendar Agent": respond("Free Tuesday afternoon."),
+        },
+      });
+
+      await speak(harness, "alice", "Book a flight and check my calendar.");
+
+      // Each specialist ran on its own LLM with its own context, and the
+      // dispatched prompt carries a time stamp for temporal context.
+      const travel = harness.llms.get("Travel Agent")!;
+      const calendar = harness.llms.get("Calendar Agent")!;
+      expect(travel.requests).toHaveLength(1);
+      expect(calendar.requests).toHaveLength(1);
+      const travelPrompt = travel.requests[0]!.messages.at(-1)!;
+      expect(travelPrompt.role).toBe("user");
+      expect(travelPrompt.content).toContain("Find flights Paris to London tomorrow morning.");
+      expect(travelPrompt.content).toMatch(/Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.$/);
+      expect(travel.requests[0]!.messages[0]).toEqual({
+        role: "system",
+        name: "Travel Agent",
+        content: "You are Travel Agent.",
+      });
+
+      // The coordinator resumed with both specialist outputs as the tool
+      // result and composed the final answer.
+      expect(harness.llm.requests).toHaveLength(2);
+      expect(harness.llm.requests[1]!.messages.at(-1)).toEqual({
+        role: "tool",
+        toolCallId: "call_1",
+        name: "dispatch",
+        content: JSON.stringify([
+          { agent: "Travel Agent", text: "Flight at 3pm." },
+          { agent: "Calendar Agent", text: "Free Tuesday afternoon." },
+        ]),
+      });
+
+      // Sub-generations are persisted, attributed, and linked to the
+      // coordinator generation that dispatched them.
+      const generations = await harness.persistence.listGenerations("conv-1");
+      const coordinatorGen = generations.find((g) => g.agentName === "Jarvis")!;
+      const subGens = generations.filter((g) => g.kind === "sub");
+      expect(subGens).toHaveLength(2);
+      expect(subGens.map((g) => [g.agentName, g.text, g.status])).toEqual([
+        ["Travel Agent", "Flight at 3pm.", "completed"],
+        ["Calendar Agent", "Free Tuesday afternoon.", "completed"],
+      ]);
+      for (const sub of subGens) {
+        expect(sub.parentGenerationId).toBe(coordinatorGen.id);
+      }
+      expect(coordinatorGen.status).toBe("completed");
+      // The generation accumulates the narration and the merged answer.
+      expect(coordinatorGen.text).toBe(
+        "Let me check both. I found a 3pm flight and your calendar is free.",
+      );
+
+      // Transcript: user turn, each specialist's work, then the merged answer.
+      const transcript = await harness.persistence.listTranscript("conv-1");
+      expect(transcript.map((e) => e.toString())).toEqual([
+        "al: Book a flight and check my calendar.",
+        "Travel Agent: Flight at 3pm.",
+        "Calendar Agent: Free Tuesday afternoon.",
+        "Jarvis: Let me check both. I found a 3pm flight and your calendar is free.",
+      ]);
+
+      // The coordinator narrated while the specialists worked, then spoke
+      // the merged answer. Specialists are text-only.
+      expect(harness.tts.requests.map((r) => r.text)).toEqual([
+        "Let me check both.",
+        "I found a 3pm flight and your calendar is free.",
+      ]);
+    });
+
+    test("runs dispatched specialists in parallel", async () => {
+      const reached: string[] = [];
+      const waitForBoth = async () => {
+        for (let i = 0; i < 2000; i++) {
+          if (reached.length >= 2) return;
+          await Bun.sleep(1);
+        }
+        throw new Error("specialists did not run in parallel");
+      };
+
+      const harness = await setupRoster({
+        coordinatorScript: coordinatorThatDispatches(
+          JSON.stringify({
+            tasks: [
+              { agent: "Travel Agent", prompt: "Find flights." },
+              { agent: "Calendar Agent", prompt: "Check meetings." },
+            ],
+          }),
+        ),
+        scripts: {
+          "Travel Agent": async function* () {
+            reached.push("travel");
+            await waitForBoth();
+            yield { type: "delta", content: "Flight at 3pm." };
+            yield { type: "done" };
+          },
+          "Calendar Agent": async function* () {
+            reached.push("calendar");
+            await waitForBoth();
+            yield { type: "delta", content: "Calendar is free." };
+            yield { type: "done" };
+          },
+        },
+      });
+
+      // If the tasks ran serially, the first specialist would wait forever
+      // for the second and the test would time out.
+      await speak(harness, "alice", "Plan my trip.");
+
+      expect(reached.sort()).toEqual(["calendar", "travel"]);
+      expect(harness.llms.get("Travel Agent")!.requests).toHaveLength(1);
+      expect(harness.llms.get("Calendar Agent")!.requests).toHaveLength(1);
+      expect(harness.llm.requests[1]!.messages.at(-1)?.role).toBe("tool");
+    });
+
+    test("dispatched specialists keep their own tools running in the app backend", async () => {
+      const getSchedule = new Tool({
+        name: "get_schedule",
+        description: "Get the day's schedule.",
+        execute: async () => "free Tuesday afternoon",
+      });
+
+      const harness = await setupRoster({
+        coordinatorScript: coordinatorThatDispatches(
+          JSON.stringify({
+            tasks: [{ agent: "Calendar Agent", prompt: "Check Tuesday afternoon." }],
+          }),
+        ),
+        scripts: {
+          "Calendar Agent": async function* (request) {
+            if (request.messages.at(-1)?.role === "tool") {
+              yield { type: "delta", content: "Tuesday afternoon is free." };
+              yield { type: "done" };
+              return;
+            }
+            yield {
+              type: "tool_call",
+              id: "call_c1",
+              name: "get_schedule",
+              arguments: "{}",
+            };
+            yield { type: "done" };
+          },
+        },
+        tools: { "Calendar Agent": [getSchedule] },
+      });
+
+      const toolCalls: string[] = [];
+      harness.conversation.on("tool-call", (payload) => {
+        toolCalls.push(payload.call.name);
+        if (payload.call.name === "get_schedule") {
+          harness.conversation.resolveToolCall({
+            id: payload.call.id,
+            result: "free Tuesday afternoon",
+          });
+        }
+      });
+
+      await speak(harness, "alice", "Check my Tuesday.");
+
+      // The specialist's tool was surfaced to the application, executed
+      // there, and its result fed back into the specialist's LLM loop.
+      expect(toolCalls).toEqual(["get_schedule"]);
+      const calendar = harness.llms.get("Calendar Agent")!;
+      expect(calendar.requests).toHaveLength(2);
+      expect(calendar.requests[1]!.messages.at(-1)).toEqual({
+        role: "tool",
+        toolCallId: "call_c1",
+        name: "get_schedule",
+        content: '"free Tuesday afternoon"',
+      });
+
+      // The coordinator merged the specialist's findings.
+      expect(harness.llm.requests[1]!.messages.at(-1)).toMatchObject({
+        role: "tool",
+        name: "dispatch",
+      });
+      expect(
+        JSON.parse(
+          (harness.llm.requests[1]!.messages.at(-1) as { content: string }).content,
+        ),
+      ).toEqual([{ agent: "Calendar Agent", text: "Tuesday afternoon is free." }]);
+    });
+
+    test("a dispatch to an unknown agent reports an error the coordinator can recover from", async () => {
+      const harness = await setupRoster({
+        coordinatorScript: async function* (request) {
+          if (request.messages.at(-1)?.role === "tool") {
+            yield { type: "delta", content: "I could not reach that service." };
+            yield { type: "done" };
+            return;
+          }
+          yield {
+            type: "tool_call",
+            id: "call_1",
+            name: "dispatch",
+            arguments: JSON.stringify({
+              tasks: [{ agent: "Ghost Agent", prompt: "Do the thing." }],
+            }),
+          };
+          yield { type: "done" };
+        },
+        scripts: {},
+      });
+
+      await speak(harness, "alice", "Do the thing.");
+
+      const dispatchResult = harness.llm.requests[1]!.messages.at(-1) as {
+        content: string;
+      };
+      expect(JSON.parse(dispatchResult.content)).toEqual([
+        { agent: "Ghost Agent", text: "", error: 'Unknown agent "Ghost Agent"' },
+      ]);
+      expect(harness.llm.requests[1]!.messages.at(-1)).toMatchObject({
+        role: "tool",
+        name: "dispatch",
+      });
+
+      // No sub-generation was created, and the coordinator still completed.
+      const generations = await harness.persistence.listGenerations("conv-1");
+      expect(generations.filter((g) => g.kind === "sub")).toHaveLength(0);
+      expect(generations[0]?.status).toBe("completed");
+      expect(generations[0]?.text).toBe("I could not reach that service.");
+    });
+
+    test("malformed dispatch arguments surface the parse error instead of crashing", async () => {
+      const harness = await setupRoster({
+        coordinatorScript: async function* (request) {
+          if (request.messages.at(-1)?.role === "tool") {
+            yield { type: "delta", content: "Let me rephrase that." };
+            yield { type: "done" };
+            return;
+          }
+          yield {
+            type: "tool_call",
+            id: "call_1",
+            name: "dispatch",
+            arguments: "{not json",
+          };
+          yield { type: "done" };
+        },
+        scripts: {},
+      });
+
+      await speak(harness, "alice", "Do the thing.");
+
+      const dispatchResult = harness.llm.requests[1]!.messages.at(-1) as {
+        content: string;
+      };
+      expect(JSON.parse(dispatchResult.content)).toEqual({
+        error: "dispatch arguments must be valid JSON",
+      });
+      expect(harness.llm.requests[1]!.messages.at(-1)).toMatchObject({
+        role: "tool",
+        name: "dispatch",
+      });
+    });
+
+    test("interrupt cancels in-flight sub-generations", async () => {
+      let travelCalls = 0;
+      const harness = await setupRoster({
+        coordinatorScript: coordinatorThatDispatches(
+          JSON.stringify({
+            tasks: [{ agent: "Travel Agent", prompt: "Find flights." }],
+          }),
+        ),
+        scripts: {
+          "Travel Agent": async function* (_request, signal) {
+            const n = travelCalls++;
+            if (n === 0) {
+              yield { type: "delta", content: "Looking up flights..." };
+              while (!signal.aborted) await Bun.sleep(2);
+              throw new DOMException("The operation was aborted.", "AbortError");
+            }
+            yield { type: "delta", content: "Flight at 5pm." };
+            yield { type: "done" };
+          },
+        },
+      });
+
+      harness.conversation.listen({ userId: "alice", audio: new Uint8Array([1]) });
+      harness.stt.sessions[0]!.emitFinal("Book me a flight.");
+      await waitFor(() => harness.llms.get("Travel Agent")!.requests.length === 1);
+
+      harness.conversation.interrupt();
+      await harness.orchestrator.whenIdle();
+
+      // The coordinator generation and the in-flight sub-generation were
+      // both cancelled, not completed.
+      const generations = await harness.persistence.listGenerations("conv-1");
+      const coordinatorGen = generations.find((g) => g.agentName === "Jarvis")!;
+      const subGen = generations.find((g) => g.kind === "sub")!;
+      expect(coordinatorGen.status).toBe("cancelled");
+      expect(subGen.status).toBe("cancelled");
+      expect(subGen.parentGenerationId).toBe(coordinatorGen.id);
+
+      // A fresh turn works after the interrupt: the coordinator re-dispatches
+      // and a new sub-generation completes.
+      harness.stt.sessions[0]!.emitFinal("Actually, book it for tomorrow.");
+      await harness.orchestrator.whenIdle();
+      const travel = harness.llms.get("Travel Agent")!;
+      expect(travel.requests).toHaveLength(2);
+      const after = await harness.persistence.listGenerations("conv-1");
+      const subGens = after.filter((g) => g.kind === "sub");
+      expect(subGens).toHaveLength(2);
+      expect(subGens[1]?.status).toBe("completed");
+      expect(subGens[1]?.text).toBe("Flight at 5pm.");
+    });
+
+    test("rehydrates history without sub-generations", async () => {
+      const persistence = new MemoryPersistence();
+      const conversation = new Conversation({ id: "conv-1", persistence });
+      await conversation.pushTurn({
+        id: "turn-1",
+        conversationId: "conv-1",
+        participantId: "alice",
+        participantName: "alice",
+        text: "Hello from before.",
+        sequence: 0,
+        startedAt: 1,
+        endedAt: 2,
+      });
+      await conversation.pushTranscript({
+        speaker: "alice",
+        speakerKind: "participant",
+        text: "Hello from before.",
+      });
+      // A completed coordinator response plus the sub-generation it
+      // dispatched. Only the coordinator response should rehydrate.
+      await conversation.pushGeneration({
+        id: "gen-1",
+        conversationId: "conv-1",
+        agentName: "Jarvis",
+        text: "Summary answer.",
+        status: "completed",
+        startedAt: 3,
+        endedAt: 4,
+      });
+      await conversation.pushSubGeneration({
+        id: "gen-2",
+        conversationId: "conv-1",
+        agentName: "Calendar Agent",
+        text: "Free.",
+        status: "completed",
+        startedAt: 5,
+        endedAt: 6,
+        kind: "sub",
+        parentGenerationId: "gen-1",
+      });
+
+      const llm = new FakeLLM(respond("Welcome back!"));
+      const stt = new FakeSTT();
+      const agent = new Agent({ name: "Jarvis", context: "Be concise.", llm });
+      const orchestrator = new Orchestrator({
+        conversation,
+        agents: [agent],
+        llm,
+        stt,
+        tts: new FakeTTS((text) => [new TextEncoder().encode(text)]),
+        persistence,
+      });
+      conversation.start();
+      await conversation.participate({ userId: "alice" });
+      await orchestrator.start();
+
+      conversation.listen({ userId: "alice", audio: new Uint8Array([1]) });
+      stt.sessions[0]!.emitFinal("Can you continue?");
+      await orchestrator.whenIdle();
+
+      // The sub-generation's text is not in history — the coordinator's own
+      // summary stands in for it.
+      expect(llm.requests[0]!.messages).toEqual([
+        { role: "system", name: "Jarvis", content: "Be concise." },
+        { role: "user", content: "alice: Hello from before." },
+        { role: "assistant", name: "Jarvis", content: "Summary answer." },
+        { role: "user", content: "alice: Can you continue?" },
+      ]);
     });
   });
 

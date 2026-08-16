@@ -334,10 +334,11 @@ The conversation orchestrator maintains conversational state such as:
 In a one-to-one conversation, speech is treated as an interaction: every
 finalized participant turn produces an agent generation.
 
-Multi-participant floor management and addressing (determining when an agent is
-being spoken to using participant context, agent names, aliases, and floor
-rules) are on the roadmap. A wake word is not intended to be a fundamental
-requirement.
+Addressing works at a basic level: a turn is routed to the agent whose name
+or alias appears in the speech, falling back to the first agent in the roster.
+Floor management, multi-participant turn-taking rules, and richer addressing
+heuristics are on the roadmap. A wake word is not intended to be a
+fundamental requirement.
 
 </details>
 
@@ -381,9 +382,36 @@ The conversation owns the runtime.
 
 The agent owns the intelligence.
 
-A conversation currently runs with a **single driving agent**: `create({ agents })` accepts a roster for metadata
-and persistence, but `start()` rejects more than one agent until multi-agent orchestration lands. Involving
-other agents today is done through tools — an agent's tool can invoke another agent's `run()` in your backend.
+A conversation can coordinate **multiple agents**: `create({ agents })` accepts
+a roster, and each turn is routed to the agent whose name or alias appears in
+the speech — falling back to the first agent when none is addressed. Each
+agent keeps its own context and its own LLM; the conversation owns the shared
+runtime (STT, TTS, history, interruptions).
+
+```ts
+const receptionist = pipeflow.agent({
+  name: "Receptionist",
+  context: `
+    You are the front desk. Greet people and route requests.
+  `,
+});
+
+const specialist = pipeflow.agent({
+  name: "Technical Specialist",
+  aliases: ["tech"],
+  context: `
+    You are the technical support specialist.
+  `,
+});
+
+const conversation =
+  await pipeflow.conversations.create({
+    agents: [receptionist, specialist],
+  });
+```
+
+"Ask the technical specialist about X" is routed to the specialist; an
+unaddressed turn goes to the first agent in the roster.
 
 ```text
 Agent

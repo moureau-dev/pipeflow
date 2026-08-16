@@ -332,24 +332,15 @@ export class Conversation {
 
   private buildRealtime(): Orchestrator | null {
     if (!this.stt) return null;
-    if (this.agents.length > 1) {
-      throw new Error(
-        "Multi-agent conversations are not supported yet: " +
-          `conversation "${this.id}" has ${this.agents.length} agents, but a single ` +
-          "agent drives the realtime pipeline. Pass one agent per conversation " +
-          "until multi-agent orchestration lands.",
-      );
-    }
-    const agent = this.agents[0];
     const common = {
       conversation: this,
       stt: this.stt,
       persistence: this.persistence,
     };
-    // With an agent the orchestrator runs the full voice loop; without one it
-    // runs in transcription-only mode.
-    return agent
-      ? new Orchestrator({ ...common, agent, tts: this.tts })
+    // With agents the orchestrator coordinates the roster, routing each turn
+    // to an agent by name/alias. Without agents it runs transcription-only.
+    return this.agents.length > 0
+      ? new Orchestrator({ ...common, agents: [...this.agents], tts: this.tts })
       : new Orchestrator(common);
   }
 

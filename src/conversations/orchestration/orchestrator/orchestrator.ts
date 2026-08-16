@@ -14,14 +14,16 @@ import type { AudioChunk, ToolCallResult, Turn, UserId } from "../../types";
 export interface OrchestratorOptions {
   conversation: Conversation;
   /**
-   * The agent driving the realtime loop. Omit it for transcription-only
-   * mode (audio in, turns and transcripts out — no LLM or TTS required).
+   * The agents the coordinator routes turns to. The first agent is the
+   * default (used when no agent is addressed by name or alias). Omit for
+   * transcription-only mode (audio in, turns and transcripts out — no LLM
+   * or TTS required).
    */
-  agent?: Agent;
-  /** Defaults to the agent's LLM. */
+  agents?: Agent[];
+  /** Defaults to the first agent's LLM. */
   llm?: LLM;
   stt: STT;
-  /** Required when an agent is attached. */
+  /** Required when agents are attached. */
   tts?: TTS;
   /** Used to rehydrate conversation history on start. */
   persistence?: Persistence;
@@ -46,14 +48,34 @@ interface ResolvedToolCall {
 }
 
 /**
- * The realtime conversation state machine.
+ * Pick the agent that should handle a turn.
  *
- * Wires the conversation to the providers:
+ * The first agent whose name or alias appears in the turn text wins;
+ * otherwise the first agent in the roster is the default. Matching is
+ * case-insensitive substring matching, so "ask the technical specialist"
+ * addresses an agent named "Technical Specialist" (or aliased "tech").
+ */
+export function pickAgent(agents: readonly Agent[], text: string): Agent | null {
+  if (agents.length === 0) return null;
+  const normalized = text.toLowerCase();
+  for (const agent of agents) {
+    if (agent.name && normalized.includes(agent.name.toLowerCase())) return agent;
+    for (const alias of agent.aliases) {
+      if (normalized.includes(alias.toLowerCase())) return agent;
+    }
+  }
+  return agents[0]!;
+}
+
+/**
+ * The realtime conversation state machine and multi-agent coordinator.
+ *
+ * Wires the conversation to the providers and routes each turn to an agent:
  *
  * ```text
- * audio-in ──► STT ──► turn ──► LLM ──► TTS ──► audio-out
- *                              │
- *                              └─► tool-call ──► app resolves ──► resume
+ * audio-in ──► STT ──► turn ──► coordinator ──► agent ──► LLM ──► TTS ──► audio-out
+ *                                    │
+ *                                    └─► tool-call ──► app resolves ──► resume
  * ```
  *
  * Deltas stream to TTS immediately (so the agent can narrate while a tool
@@ -63,7 +85,7 @@ interface ResolvedToolCall {
  */
 export class Orchestrator {
   private readonly conversation: Conversation;
-  private readonly agent: Agent | undefined;
+  private readonly agents: Agent[];
   private readonly llm: LLM | undefined;
   private readonly stt: STT;
   private readonly tts: TTS | undefined;
@@ -89,21 +111,22 @@ export class Orchestrator {
   private turnSequence = 0;
 
   constructor(options: OrchestratorOptions) {
-    const llm = options.llm ?? options.agent?.llm;
+    const agents = options.agents ?? [];
+    const llm = options.llm ?? agents[0]?.llm;
     if (!options.stt) {
       throw new Error("Orchestrator requires an STT provider");
     }
-    if (options.agent && !llm) {
+    if (agents.length > 0 && !llm) {
       throw new Error(
-        "Orchestrator requires an LLM when an agent is attached: " +
-          "pass one explicitly or configure the agent with one",
+        "Orchestrator requires an LLM when agents are attached: " +
+          "pass one explicitly or configure an agent with one",
       );
     }
-    if (options.agent && !options.tts) {
-      throw new Error("Orchestrator requires a TTS provider when an agent is attached");
+    if (agents.length > 0 && !options.tts) {
+      throw new Error("Orchestrator requires a TTS provider when agents are attached");
     }
     this.conversation = options.conversation;
-    this.agent = options.agent;
+    this.agents = agents;
     this.llm = llm;
     this.stt = options.stt;
     this.tts = options.tts;
@@ -129,7 +152,7 @@ export class Orchestrator {
       ]);
       const entries: Array<
         | { at: number; kind: "turn"; turn: Turn }
-        | { at: number; kind: "generation"; text: string }
+        | { at: number; kind: "generation"; agentName: string; text: string }
       > = [
         ...turns.map((turn) => ({ at: turn.startedAt, kind: "turn" as const, turn })),
         ...generations
@@ -137,6 +160,7 @@ export class Orchestrator {
           .map((generation) => ({
             at: generation.startedAt,
             kind: "generation" as const,
+            agentName: generation.agentName,
             text: generation.text,
           })),
       ].sort((a, b) => a.at - b.at);
@@ -148,7 +172,11 @@ export class Orchestrator {
             content: `${entry.turn.participantName}: ${entry.turn.text}`,
           });
         } else {
-          this.history.push({ role: "assistant", content: entry.text });
+          this.history.push({
+            role: "assistant",
+            name: entry.agentName,
+            content: entry.text,
+          });
         }
       }
     }
@@ -167,7 +195,7 @@ export class Orchestrator {
     if (!this.started) return;
     this.started = false;
     this.epoch++;
-    this.llm?.stop();
+    this.stopLlms();
     this.tts?.stop();
     this.cancelToolWaiters("conversation stopped");
     this.speechBuffer = "";
@@ -280,8 +308,8 @@ export class Orchestrator {
         role: "user",
         content: `${turn.participantName}: ${turn.text}`,
       });
-      if (this.agent) {
-        this.queueGeneration();
+      if (this.agents.length > 0) {
+        this.queueGeneration(turn);
       }
     } finally {
       this.pendingTurns--;
@@ -290,10 +318,20 @@ export class Orchestrator {
 
   private onInterrupt(): void {
     this.epoch++;
-    this.llm?.stop();
+    this.stopLlms();
     this.tts?.stop();
     this.cancelToolWaiters("interrupted");
     this.speechBuffer = "";
+  }
+
+  /** Cancel every LLM in play: the shared one and each agent's own. */
+  private stopLlms(): void {
+    const seen = new Set<LLM>();
+    if (this.llm) seen.add(this.llm);
+    for (const agent of this.agents) {
+      if (agent.llm) seen.add(agent.llm);
+    }
+    for (const llm of seen) llm.stop();
   }
 
   private onToolCallResult(result: ToolCallResult): void {
@@ -311,7 +349,7 @@ export class Orchestrator {
   // Generation
   // -------------------------------------------------------------------------
 
-  private queueGeneration(): void {
+  private queueGeneration(turn: Turn): void {
     this.pendingGenerations++;
     const epoch = this.epoch;
     this.generationChain = this.generationChain.then(async () => {
@@ -321,19 +359,27 @@ export class Orchestrator {
         return;
       }
       try {
-        await this.generate();
+        await this.generate(turn);
       } finally {
         this.pendingGenerations--;
       }
     });
   }
 
-  private async generate(): Promise<void> {
-    const { agent, llm, tts } = this;
-    if (!agent || !llm || !tts) return;
+  private async generate(turn: Turn): Promise<void> {
+    if (this.agents.length === 0) return;
+    // The coordinator routes this turn to an agent by name/alias, falling
+    // back to the first agent in the roster.
+    const agent = pickAgent(this.agents, turn.text);
+    if (!agent) return;
+    // Prefer the routed agent's own LLM so agents with different providers
+    // keep their intelligence; fall back to the shared LLM.
+    const llm = agent.llm ?? this.llm;
+    const tts = this.tts;
+    if (!llm || !tts) return;
     this.generating = true;
     try {
-      await this.runGeneration(this.epoch, agent, llm, tts);
+      await this.runGeneration(this.epoch, turn, agent, llm, tts);
     } finally {
       this.generating = false;
     }
@@ -341,6 +387,7 @@ export class Orchestrator {
 
   private async runGeneration(
     epoch: number,
+    turn: Turn,
     agent: Agent,
     llm: LLM,
     tts: TTS,
@@ -362,7 +409,7 @@ export class Orchestrator {
 
     const messages: LLMMessage[] = [];
     if (agent.context) {
-      messages.push({ role: "system", content: agent.context });
+      messages.push({ role: "system", name: agent.name, content: agent.context });
     }
     messages.push(...this.history);
 
@@ -403,7 +450,7 @@ export class Orchestrator {
           // Pause the response: let the narration finish, hand the calls to
           // the application, and resume once they are resolved.
           this.flushSpeech();
-          messages.push({ role: "assistant", content: text, toolCalls });
+          messages.push({ role: "assistant", name: agent.name, content: text, toolCalls });
           const results = await this.resolveToolCalls(toolCalls, epoch);
           if (this.epoch !== epoch) return;
           for (const result of results) {
@@ -435,7 +482,7 @@ export class Orchestrator {
         speakerKind: "agent",
         text,
       });
-      this.history.push({ role: "assistant", content: text });
+      this.history.push({ role: "assistant", name: agent.name, content: text });
     } catch (error) {
       if (this.epoch !== epoch) return; // interrupted — discard everything
       this.conversation.emit("error", {
@@ -451,7 +498,7 @@ export class Orchestrator {
           speakerKind: "agent",
           text,
         });
-        this.history.push({ role: "assistant", content: text });
+        this.history.push({ role: "assistant", name: agent.name, content: text });
       }
     }
   }

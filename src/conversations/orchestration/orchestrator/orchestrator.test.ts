@@ -3,7 +3,7 @@ import { Agent } from "../../../agents/agent";
 import { Tool } from "../../../agents/tools/tools";
 import { Conversation } from "../../conversation/conversation";
 import { MemoryPersistence } from "../../../persistence/adapters/memory/memory";
-import { Orchestrator } from "./orchestrator";
+import { Orchestrator, pickAgent } from "./orchestrator";
 import type { AudioChunk, ToolCall, UserId } from "../../types";
 import type {
   LLM,
@@ -167,7 +167,7 @@ function setup(options: {
     });
     const orchestrator = new Orchestrator({
       conversation,
-      agent,
+      agents: [agent],
       llm,
       stt,
       tts,
@@ -217,7 +217,7 @@ describe("Orchestrator", () => {
     const stt = new FakeSTT();
     const tts = new FakeTTS(() => []);
     expect(
-      () => new Orchestrator({ conversation, agent, stt, tts }),
+      () => new Orchestrator({ conversation, agents: [agent], stt, tts }),
     ).toThrow(/requires an LLM/);
   });
 
@@ -225,7 +225,7 @@ describe("Orchestrator", () => {
     const conversation = new Conversation({ id: "conv-1" });
     const agent = new Agent({ name: "Jarvis", llm: new FakeLLM(respond("ok")) });
     const stt = new FakeSTT();
-    expect(() => new Orchestrator({ conversation, agent, stt })).toThrow(
+    expect(() => new Orchestrator({ conversation, agents: [agent], stt })).toThrow(
       /requires a TTS provider/,
     );
   });
@@ -283,7 +283,7 @@ describe("Orchestrator", () => {
 
     // LLM saw the system context and the user turn.
     expect(harness.llm.requests[0]!.messages).toEqual([
-      { role: "system", content: "Be concise." },
+      { role: "system", name: "Jarvis", content: "Be concise." },
       { role: "user", content: "al: Hello there." },
     ]);
 
@@ -544,15 +544,153 @@ describe("Orchestrator", () => {
     // The second request carries the whole exchange so the follow-up
     // answer can reference it.
     expect(harness.llm.requests[1]!.messages).toEqual([
-      { role: "system", content: "Be concise." },
+      { role: "system", name: "Jarvis", content: "Be concise." },
       { role: "user", content: "al: What is the weather?" },
-      { role: "assistant", content: "Which city?" },
+      { role: "assistant", name: "Jarvis", content: "Which city?" },
       { role: "user", content: "al: In London." },
     ]);
     expect(harness.tts.requests.map((r) => r.text)).toEqual([
       "Which city?",
       "It is sunny in London!",
     ]);
+  });
+
+  test("routes each turn to the addressed agent and uses its own LLM", async () => {
+    const persistence = new MemoryPersistence();
+    const conversation = new Conversation({ id: "conv-1", persistence });
+    const receptionistLlm = new FakeLLM(respond("How can I help?"));
+    const specialistLlm = new FakeLLM(respond("Let me look into that."));
+    const stt = new FakeSTT();
+    const tts = new FakeTTS((text) => [new TextEncoder().encode(text)]);
+    const receptionist = new Agent({
+      name: "Receptionist",
+      context: "You greet people.",
+      llm: receptionistLlm,
+    });
+    const specialist = new Agent({
+      name: "Technical Specialist",
+      aliases: ["tech"],
+      context: "You solve technical problems.",
+      llm: specialistLlm,
+    });
+    const orchestrator = new Orchestrator({
+      conversation,
+      agents: [receptionist, specialist],
+      stt,
+      tts,
+      persistence,
+    });
+
+    conversation.start();
+    await conversation.participate({ userId: "alice", aliases: ["al"] });
+    await orchestrator.start();
+
+    // Unaddressed turn → the first agent is the default.
+    conversation.listen({ userId: "alice", audio: new Uint8Array([1]) });
+    stt.sessions[0]!.emitFinal("Hello there.");
+    await orchestrator.whenIdle();
+
+    expect(receptionistLlm.requests).toHaveLength(1);
+    expect(specialistLlm.requests).toHaveLength(0);
+    expect(receptionistLlm.requests[0]!.messages).toEqual([
+      { role: "system", name: "Receptionist", content: "You greet people." },
+      { role: "user", content: "al: Hello there." },
+    ]);
+
+    // An addressed turn goes to the specialist — and runs on the
+    // specialist's own LLM rather than the default agent's.
+    stt.sessions[0]!.emitFinal("Ask the technical specialist to fix it.");
+    await orchestrator.whenIdle();
+
+    expect(specialistLlm.requests).toHaveLength(1);
+    expect(receptionistLlm.requests).toHaveLength(1);
+    // The specialist gets its own system context plus the shared history,
+    // with the receptionist's reply attributed by name.
+    expect(specialistLlm.requests[0]!.messages).toEqual([
+      {
+        role: "system",
+        name: "Technical Specialist",
+        content: "You solve technical problems.",
+      },
+      { role: "user", content: "al: Hello there." },
+      {
+        role: "assistant",
+        name: "Receptionist",
+        content: "How can I help?",
+      },
+      { role: "user", content: "al: Ask the technical specialist to fix it." },
+    ]);
+
+    // Each generation is attributed to the agent that spoke.
+    const generations = await persistence.listGenerations("conv-1");
+    expect(generations.map((g) => g.agentName)).toEqual([
+      "Receptionist",
+      "Technical Specialist",
+    ]);
+    const transcript = await persistence.listTranscript("conv-1");
+    expect(transcript.map((e) => e.toString())).toEqual([
+      "al: Hello there.",
+      "Receptionist: How can I help?",
+      "al: Ask the technical specialist to fix it.",
+      "Technical Specialist: Let me look into that.",
+    ]);
+  });
+
+  test("routes to an agent by alias", async () => {
+    const persistence = new MemoryPersistence();
+    const conversation = new Conversation({ id: "conv-1", persistence });
+    const receptionistLlm = new FakeLLM(respond("ok"));
+    const specialistLlm = new FakeLLM(respond("on it"));
+    const stt = new FakeSTT();
+    const orchestrator = new Orchestrator({
+      conversation,
+      agents: [
+        new Agent({ name: "Receptionist", llm: receptionistLlm }),
+        new Agent({ name: "Technical Specialist", aliases: ["tech"], llm: specialistLlm }),
+      ],
+      stt,
+      tts: new FakeTTS((text) => [new TextEncoder().encode(text)]),
+      persistence,
+    });
+
+    conversation.start();
+    await conversation.participate({ userId: "alice" });
+    await orchestrator.start();
+
+    conversation.listen({ userId: "alice", audio: new Uint8Array([1]) });
+    stt.sessions[0]!.emitFinal("can you help me, tech?");
+    await orchestrator.whenIdle();
+
+    expect(specialistLlm.requests).toHaveLength(1);
+    expect(receptionistLlm.requests).toHaveLength(0);
+  });
+
+  describe("pickAgent", () => {
+    const receptionist = new Agent({ name: "Receptionist" });
+    const specialist = new Agent({
+      name: "Technical Specialist",
+      aliases: ["tech", "support"],
+    });
+    const roster = [receptionist, specialist];
+
+    test("matches by name, then alias, then defaults to the first agent", () => {
+      expect(pickAgent(roster, "ask the technical specialist about X")).toBe(
+        specialist,
+      );
+      expect(pickAgent(roster, "talk to tech please")).toBe(specialist);
+      expect(pickAgent(roster, "hi there")).toBe(receptionist);
+      expect(pickAgent(roster, "")).toBe(receptionist);
+    });
+
+    test("matching is case-insensitive", () => {
+      expect(pickAgent(roster, "TECHNICAL SPECIALIST!")).toBe(specialist);
+      expect(pickAgent(roster, "Hi, Tech")).toBe(specialist);
+      expect(pickAgent(roster, "RECEPTIONIST?")).toBe(receptionist);
+    });
+
+    test("returns null for an empty roster", () => {
+      expect(pickAgent([], "anything")).toBeNull();
+    });
   });
 
   test("rehydrates history from persistence on start", async () => {
@@ -579,7 +717,7 @@ describe("Orchestrator", () => {
     const agent = new Agent({ name: "Jarvis", context: "Be concise.", llm });
     const orchestrator = new Orchestrator({
       conversation,
-      agent,
+      agents: [agent],
       llm,
       stt,
       tts: new FakeTTS((text) => [new TextEncoder().encode(text)]),
@@ -594,7 +732,7 @@ describe("Orchestrator", () => {
     await orchestrator.whenIdle();
 
     expect(llm.requests[0]!.messages).toEqual([
-      { role: "system", content: "Be concise." },
+      { role: "system", name: "Jarvis", content: "Be concise." },
       { role: "user", content: "alice: Hello from before." },
       { role: "user", content: "alice: Can you continue?" },
     ]);

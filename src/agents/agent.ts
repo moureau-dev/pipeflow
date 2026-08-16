@@ -8,6 +8,8 @@ import type {
 
 export interface AgentOptions {
   name: string;
+  /** Names a participant might use to address this agent. */
+  aliases?: string[];
   context?: string;
   tools?: Tool<never, unknown>[];
   /** LLM provider used by `run()`. Injected by `Pipeflow.agent()`. */
@@ -50,6 +52,7 @@ export interface AgentRunResult {
  */
 export class Agent {
   readonly name: string;
+  readonly aliases: string[];
   readonly context: string;
   private readonly toolRegistry = new Map<string, Tool<never, unknown>>();
   /** LLM provider used by `run()` and the orchestrator. */
@@ -61,6 +64,7 @@ export class Agent {
       throw new Error("Agent requires a non-empty name");
     }
     this.name = name;
+    this.aliases = [...(options.aliases ?? [])];
     this.context = options.context?.trim() ?? "";
     this.llm = options.llm;
     for (const tool of options.tools ?? []) {

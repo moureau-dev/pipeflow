@@ -1,2 +1,2 @@
-export { Orchestrator } from "./orchestrator";
+export { Orchestrator, pickAgent } from "./orchestrator";
 export type { OrchestratorOptions } from "./orchestrator";

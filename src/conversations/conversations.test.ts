@@ -230,21 +230,43 @@ describe("Conversations", () => {
     expect(record?.endedAt).not.toBeNull();
   });
 
-  test("start() rejects conversations with multiple agents", async () => {
+  test("start() routes turns to the addressed agent in a multi-agent conversation", async () => {
     const stt = new FakeSTT();
     const tts = new FakeTTS();
+    const receptionistLlm = new FakeLLM();
+    const specialistLlm = new FakeLLM();
     const api = conversations({ stt, tts });
     const conversation = await api.create({
       agents: [
-        new Agent({ name: "Jarvis", llm: new FakeLLM() }),
-        new Agent({ name: "Analyst", llm: new FakeLLM() }),
+        new Agent({ name: "Receptionist", context: "You greet people.", llm: receptionistLlm }),
+        new Agent({
+          name: "Technical Specialist",
+          aliases: ["tech"],
+          context: "You solve problems.",
+          llm: specialistLlm,
+        }),
       ],
     });
-    await conversation.participate({ userId: "alice" });
+    await conversation.participate({ userId: "alice", aliases: ["al"] });
+    await conversation.start();
 
-    await expect(conversation.start()).rejects.toThrow(/Multi-agent conversations are not supported/);
-    // Rejection happens before any state is mutated.
-    expect(conversation.status).toBe("created");
+    conversation.listen({ userId: "alice", audio: new Uint8Array([1]) });
+    stt.sessions[0]!.emitFinal("Ask the technical specialist to fix it.");
+    await waitFor(() => specialistLlm.requests.length >= 1);
+    await waitFor(async () => (await api.transcript(conversation.id)).length >= 2);
+
+    // Only the addressed agent's LLM was invoked, with its own context.
+    expect(receptionistLlm.requests).toHaveLength(0);
+    expect(specialistLlm.requests[0]!.messages).toEqual([
+      { role: "system", name: "Technical Specialist", content: "You solve problems." },
+      { role: "user", content: "al: Ask the technical specialist to fix it." },
+    ]);
+
+    const transcript = await api.transcript(conversation.id);
+    expect(transcript.map((entry) => entry.toString())).toEqual([
+      "al: Ask the technical specialist to fix it.",
+      "Technical Specialist: Got it!",
+    ]);
   });
 
   test("start() attaches realtime processing in transcription-only mode", async () => {
@@ -289,7 +311,7 @@ describe("Conversations", () => {
     // The orchestrator ran the pipeline: the LLM saw the turn, TTS spoke,
     // and both the turn and the generation are persisted.
     expect(llm.requests[0]!.messages).toEqual([
-      { role: "system", content: "Be concise." },
+      { role: "system", name: "Jarvis", content: "Be concise." },
       { role: "user", content: "al: Hello there." },
     ]);
     expect(tts.requests.map((request) => request.text)).toEqual(["Got it!"]);

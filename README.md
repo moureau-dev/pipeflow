@@ -411,20 +411,25 @@ const conversation =
 ```
 
 "Ask the technical specialist about X" is routed to the specialist; an
-unaddressed turn goes to the first agent in the roster.
+unaddressed turn goes through the built-in `understand` coordination.
 
 ### Collaborative orchestration
 
-The first agent in the roster is also the **coordinator**. When a request spans
-several domains, it can decompose it into subtasks and dispatch each to the
-relevant agent, then merge the results into a single spoken answer:
+`understand` is a hardcoded **coordination**: a reasoning unit that decides
+what should happen next rather than doing the work itself. It can:
+
+- **delegate** to one or more agents (in parallel), each with a self-contained
+  prompt;
+- **pass the work to another coordination**;
+- **ask the user** a clarifying question and *suspend* until they answer;
+- **complete** with a direct answer.
 
 ```text
 User: "Book a flight and check whether my calendar conflicts."
               │
               ▼
         ┌────────────┐
-        │ Coordinator│
+        │ understand │  ← built-in coordination
         └─────┬──────┘
               │
        ┌──────┴───────┐
@@ -433,17 +438,19 @@ User: "Book a flight and check whether my calendar conflicts."
        │              │
        └──────┬───────┘
               ▼
-          Coordinator
+          understand
               │
               ▼
             User
 ```
 
-Concretely, the coordinator's LLM is given a synthetic `dispatch` tool:
+The coordination's LLM picks the next step through a synthetic `delegate`
+tool:
 
 ```jsonc
-// emitted by the coordinator's LLM, intercepted by the orchestrator
-dispatch({
+// emitted by the coordination's LLM, handled by the orchestrator
+delegate({
+  action: "agents",
   tasks: [
     { agent: "Travel Agent", prompt: "Find flights Paris → London tomorrow morning." },
     { agent: "Calendar Agent", prompt: "Check meetings on Tuesday afternoon." }
@@ -451,13 +458,21 @@ dispatch({
 })
 ```
 
-The orchestrator executes each task as a **sub-generation**: the target agent
-runs on its own LLM, context, and tools (which still execute in your backend),
-and every dispatched prompt is stamped with the current time so time-sensitive
-tasks reason about the right "now". Sub-agents are text-only — the coordinator
+Agent delegation runs as **sub-generations**: the target agent executes on its
+own LLM, context, and tools (which still run in your backend), and every
+delegated prompt is stamped with the current time so time-sensitive tasks
+reason about the right "now". Delegated agents are text-only — the coordination
 narrates while they work and speaks the merged answer. Their work is recorded
 in the transcript and persisted as sub-generations; the conversation history
-keeps the coordinator's final answer.
+keeps the coordination's final answer.
+
+Clarification is a first-class operation. If the request is ambiguous, the
+coordination asks a question, parks its execution, and **resumes on the next
+turn** instead of starting fresh — so "Which airport?" followed by "CDG"
+continues the same reasoning. While waiting, participant speech is treated as
+the answer, not as a barge-in. Coordinations can delegate to other
+coordinations, forming a bounded execution graph; a step budget guards against
+runaway delegation.
 
 ```text
 Agent

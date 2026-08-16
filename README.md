@@ -381,6 +381,10 @@ The conversation owns the runtime.
 
 The agent owns the intelligence.
 
+A conversation currently runs with a **single driving agent**: `create({ agents })` accepts a roster for metadata
+and persistence, but `start()` rejects more than one agent until multi-agent orchestration lands. Involving
+other agents today is done through tools — an agent's tool can invoke another agent's `run()` in your backend.
+
 ```text
 Agent
  ├── context

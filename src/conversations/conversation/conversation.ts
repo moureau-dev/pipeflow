@@ -332,6 +332,14 @@ export class Conversation {
 
   private buildRealtime(): Orchestrator | null {
     if (!this.stt) return null;
+    if (this.agents.length > 1) {
+      throw new Error(
+        "Multi-agent conversations are not supported yet: " +
+          `conversation "${this.id}" has ${this.agents.length} agents, but a single ` +
+          "agent drives the realtime pipeline. Pass one agent per conversation " +
+          "until multi-agent orchestration lands.",
+      );
+    }
     const agent = this.agents[0];
     const common = {
       conversation: this,

@@ -230,6 +230,23 @@ describe("Conversations", () => {
     expect(record?.endedAt).not.toBeNull();
   });
 
+  test("start() rejects conversations with multiple agents", async () => {
+    const stt = new FakeSTT();
+    const tts = new FakeTTS();
+    const api = conversations({ stt, tts });
+    const conversation = await api.create({
+      agents: [
+        new Agent({ name: "Jarvis", llm: new FakeLLM() }),
+        new Agent({ name: "Analyst", llm: new FakeLLM() }),
+      ],
+    });
+    await conversation.participate({ userId: "alice" });
+
+    await expect(conversation.start()).rejects.toThrow(/Multi-agent conversations are not supported/);
+    // Rejection happens before any state is mutated.
+    expect(conversation.status).toBe("created");
+  });
+
   test("start() attaches realtime processing in transcription-only mode", async () => {
     const stt = new FakeSTT();
     const api = conversations({ stt });

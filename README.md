@@ -169,6 +169,9 @@ Your application
 
 A conversation is the persistent entity representing a realtime interaction.
 
+See [src/conversations/README.md](src/conversations/README.md) for the
+conversation domain.
+
 ```ts
 const conversation =
   await pipeflow.conversations.create({
@@ -346,6 +349,9 @@ fundamental requirement.
 
 An agent defines an AI persona and its capabilities.
 
+See [src/agents/README.md](src/agents/README.md) for the agent and tool
+abstractions.
+
 ```ts
 const jarvis = pipeflow.agent({
   name: "Jarvis",
@@ -423,6 +429,11 @@ what should happen next rather than doing the work itself. It can:
 - **pass the work to another coordination**;
 - **ask the user** a clarifying question and *suspend* until they answer;
 - **complete** with a direct answer.
+
+See [src/conversations/orchestration/coordination/README.md](src/conversations/orchestration/coordination/README.md)
+for the coordination model and
+[src/conversations/orchestration/orchestrator/README.md](src/conversations/orchestration/orchestrator/README.md)
+for how it is wired into the realtime pipeline.
 
 ```text
 User: "Book a flight and check whether my calendar conflicts."
@@ -675,6 +686,9 @@ If it needs conversation data, **a tool provides that capability**.
 
 Pipeflow separates provider interfaces from provider implementations.
 
+See [src/providers/README.md](src/providers/README.md) for the interfaces,
+adapter contracts, and the current providers.
+
 ```text
 providers/
 ├── llm/
@@ -738,9 +752,11 @@ src/
 ### Conversation
 
 Public realtime conversation API and lifecycle.
+See [src/conversations/conversation/README.md](src/conversations/conversation/README.md).
 
 ### Orchestration
 
+See [src/conversations/orchestration/README.md](src/conversations/orchestration/README.md).
 The state machine coordinating:
 
 * speech
@@ -755,18 +771,22 @@ The state machine coordinating:
 ### Transcription
 
 Conversation transcription and transcript state.
+See [src/conversations/transcription/README.md](src/conversations/transcription/README.md).
 
 ### Providers
 
 Vendor-independent interfaces and provider adapters.
+See [src/providers/README.md](src/providers/README.md).
 
 ### Persistence
 
 Persistence abstractions with adapters such as SQLite and in-memory storage.
+See [src/persistence/README.md](src/persistence/README.md).
 
 ### Transport
 
 Realtime communication between Pipeflow and the application using Pipeflow.
+See [src/transport/README.md](src/transport/README.md).
 
 </details>
 
@@ -776,6 +796,9 @@ Realtime communication between Pipeflow and the application using Pipeflow.
 <summary>Storage adapters: in-memory for development, SQLite for lightweight persistence</summary>
 
 Pipeflow separates persistence from the conversation domain.
+
+See [src/persistence/README.md](src/persistence/README.md) for the storage
+contract and adapters.
 
 The project currently includes:
 

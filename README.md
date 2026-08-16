@@ -669,7 +669,7 @@ The provider layer is intentionally modular so applications can choose between h
 Clone the repository and install dependencies:
 
 ```bash
-git clone <repository>
+git clone git@github.com:moureau-dev/pipeflow.git
 cd pipeflow
 bun install
 ```

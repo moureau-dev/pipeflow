@@ -68,10 +68,18 @@ bun add pipeflow
 Create an agent:
 
 ```ts
-import { Pipeflow } from "pipeflow";
+import { Pipeflow, Orchestrator } from "pipeflow";
+import { DeepSeekLLM, DeepgramSTT, KokoroTTS } from "pipeflow/providers";
+
+// Providers are configured explicitly with their own credentials —
+// Pipeflow itself does not hold an API key.
+const stt = new DeepgramSTT({ apiKey: process.env.DEEPGRAM_API_KEY });
+const tts = new KokoroTTS();
 
 const pipeflow = new Pipeflow({
-  apiKey: process.env.PIPEFLOW_API_KEY,
+  llm: new DeepSeekLLM({ apiKey: process.env.DEEPSEEK_API_KEY }),
+  stt,
+  tts,
 });
 
 const jarvis = pipeflow.agent({
@@ -92,15 +100,24 @@ const conversation = await pipeflow.conversations.create({
 });
 ```
 
-Starting a conversation starts its realtime machinery:
+Attach the orchestrator — it runs the realtime pipeline (STT → turns → LLM → TTS) for the conversation:
+
+```ts
+const orchestrator = new Orchestrator({
+  conversation,
+  agent: jarvis,
+  stt,
+  tts,
+});
+
+await orchestrator.start();
+```
+
+Start the conversation and add a participant:
 
 ```ts
 conversation.start();
-```
 
-Add a participant:
-
-```ts
 await conversation.participate({
   userId: "alice",
 });
@@ -120,7 +137,7 @@ voice.onAudio((audio) => {
 Listen for generated audio:
 
 ```ts
-conversation.on("audio", (audio) => {
+conversation.on("audio", ({ audio }) => {
   voice.play(audio);
 });
 ```
@@ -169,11 +186,16 @@ Creation and realtime execution are deliberately separate.
 
 ```ts
 create()       // creates the persistent conversation
-start()        // starts realtime processing
+start()        // moves the conversation into the started state
 participate()  // adds participants
 listen()       // sends audio
 stop()         // finalizes the realtime session
 ```
+
+Realtime processing itself is the orchestrator's job: once attached, it
+subscribes to `audio-in` events, runs the STT/LLM/TTS pipeline, and pushes
+generated audio, turns, transcripts, and tool calls back through conversation
+events.
 
 `listen()` is intentionally synchronous:
 
@@ -228,7 +250,19 @@ Participant information can be used for speaker attribution, conversation histor
 
 Voice conversations need to feel immediate.
 
-If an agent is speaking and a participant starts talking, Pipeflow can interrupt the current output immediately rather than waiting for the entire utterance to be transcribed.
+If an agent is speaking and a participant starts talking, Pipeflow can interrupt
+the current output immediately rather than waiting for the entire utterance to
+be transcribed.
+
+Interruptions can be triggered by the application — or automatically: the
+orchestrator detects when a participant starts speaking while the agent is
+responding (barge-in).
+
+```ts
+conversation.interrupt(); // stops TTS, cancels the current generation
+```
+
+The interrupting speech keeps flowing into STT and becomes the next turn.
 
 Conceptually:
 
@@ -251,6 +285,26 @@ Participant starts speaking
 
 This keeps interactions responsive even when the user interrupts the agent halfway through a sentence.
 
+## Conversation events
+
+The conversation emits a typed event stream the application can subscribe to:
+
+* `audio-in` — raw audio fed in via `listen()`
+* `partial-transcript` — live STT partials (captions)
+* `turn` — a finalized participant turn
+* `transcript` — a transcript entry
+* `audio` — generated audio to play
+* `generation` — an agent generation
+* `tool-call` / `tool-call-result` — tool execution round trips
+* `interrupt` — an interruption occurred
+* `error` — a provider failure
+* `start` / `stop` / `state` — lifecycle
+
+```ts
+conversation.on("audio", ({ audio }) => voice.play(audio));
+conversation.on("partial-transcript", ({ text }) => captions.update(text));
+```
+
 ## Multi-participant conversations
 
 Conversations can contain multiple participants and agents.
@@ -272,16 +326,17 @@ The conversation orchestrator maintains conversational state such as:
 
 * active turns
 * participant identity
-* floor ownership
 * interruptions
 * agent generations
 * transcript state
 
-In a one-to-one conversation, speech can naturally be treated as an interaction.
+In a one-to-one conversation, speech is treated as an interaction: every
+finalized participant turn produces an agent generation.
 
-In multi-participant conversations, Pipeflow can determine when an agent is being addressed using participant context, agent names and aliases, conversational state, and floor rules.
-
-A wake word is not a fundamental requirement.
+Multi-participant floor management and addressing (determining when an agent is
+being spoken to using participant context, agent names, aliases, and floor
+rules) are on the roadmap. A wake word is not intended to be a fundamental
+requirement.
 
 ## Agents
 
@@ -389,6 +444,24 @@ Pipeflow does not execute arbitrary application code.
 
 This allows tools to access your database, APIs, Discord bot, business logic, filesystem, or anything else your application controls.
 
+In a conversation, tool calls never execute inside Pipeflow. The orchestrator
+emits a `tool-call` event with the requested tool and its arguments; your
+backend executes it and reports back:
+
+```ts
+conversation.on("tool-call", async ({ call }) => {
+  const result = await myBackend.execute(call.name, call.arguments);
+
+  conversation.resolveToolCall({
+    id: call.id,
+    result,
+  });
+});
+```
+
+The agent's narration continues while the tool runs, and the generation resumes
+with the tool result once it is resolved.
+
 ## Meeting transcription
 
 A conversation does not require an agent.
@@ -398,6 +471,15 @@ This makes Pipeflow useful as a realtime transcription primitive.
 ```ts
 const conversation =
   await pipeflow.conversations.create();
+
+// Without an agent, the orchestrator runs in transcription-only mode:
+// audio in, turns and transcripts out.
+const orchestrator = new Orchestrator({
+  conversation,
+  stt,
+});
+
+await orchestrator.start();
 
 conversation.start();
 
@@ -525,6 +607,9 @@ The project currently contains adapters for:
 * **STT:** Deepgram
 * **LLM:** DeepSeek
 * **TTS:** Kokoro
+
+Providers are configured with their own credentials — Pipeflow itself does
+not hold an API key.
 
 Provider availability and configuration are evolving during early development.
 

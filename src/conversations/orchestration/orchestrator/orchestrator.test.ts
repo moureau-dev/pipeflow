@@ -221,6 +221,42 @@ describe("Orchestrator", () => {
     ).toThrow(/requires an LLM/);
   });
 
+  test("requires a TTS provider when an agent is attached", () => {
+    const conversation = new Conversation({ id: "conv-1" });
+    const agent = new Agent({ name: "Jarvis", llm: new FakeLLM(respond("ok")) });
+    const stt = new FakeSTT();
+    expect(() => new Orchestrator({ conversation, agent, stt })).toThrow(
+      /requires a TTS provider/,
+    );
+  });
+
+  test("transcription-only mode works without an agent", async () => {
+    const persistence = new MemoryPersistence();
+    const conversation = new Conversation({ id: "conv-1", persistence });
+    const stt = new FakeSTT();
+    const orchestrator = new Orchestrator({ conversation, stt, persistence });
+
+    conversation.start();
+    await conversation.participate({ userId: "alice", aliases: ["al"] });
+    await orchestrator.start();
+
+    conversation.listen({ userId: "alice", audio: new Uint8Array([1]) });
+    stt.sessions[0]!.emitPartial("hello");
+    stt.sessions[0]!.emitFinal("Hello from the meeting.");
+    await orchestrator.whenIdle();
+
+    // Turns and transcript are recorded — no generation is produced.
+    const turns = await persistence.listTurns("conv-1");
+    expect(turns.map((t) => [t.participantName, t.text])).toEqual([
+      ["al", "Hello from the meeting."],
+    ]);
+    const transcript = await persistence.listTranscript("conv-1");
+    expect(transcript.map((e) => e.toString())).toEqual([
+      "al: Hello from the meeting.",
+    ]);
+    expect(await persistence.listGenerations("conv-1")).toEqual([]);
+  });
+
   test("routes audio to an STT session and streams the full pipeline", async () => {
     const harness = await setup({
       script: async function* () {

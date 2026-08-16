@@ -13,11 +13,16 @@ import type { AudioChunk, ToolCallResult, Turn, UserId } from "../../types.ts";
 
 export interface OrchestratorOptions {
   conversation: Conversation;
-  agent: Agent;
+  /**
+   * The agent driving the realtime loop. Omit it for transcription-only
+   * mode (audio in, turns and transcripts out — no LLM or TTS required).
+   */
+  agent?: Agent;
   /** Defaults to the agent's LLM. */
   llm?: LLM;
   stt: STT;
-  tts: TTS;
+  /** Required when an agent is attached. */
+  tts?: TTS;
   /** Used to rehydrate conversation history on start. */
   persistence?: Persistence;
   /** How long to wait for the application to resolve a tool call. */
@@ -58,10 +63,10 @@ interface ResolvedToolCall {
  */
 export class Orchestrator {
   private readonly conversation: Conversation;
-  private readonly agent: Agent;
-  private readonly llm: LLM;
+  private readonly agent: Agent | undefined;
+  private readonly llm: LLM | undefined;
   private readonly stt: STT;
-  private readonly tts: TTS;
+  private readonly tts: TTS | undefined;
   private readonly persistence: Persistence | undefined;
   private readonly toolTimeoutMs: number;
   private readonly maxToolIterations: number;
@@ -84,11 +89,18 @@ export class Orchestrator {
   private turnSequence = 0;
 
   constructor(options: OrchestratorOptions) {
-    const llm = options.llm ?? options.agent.llm;
-    if (!llm) {
+    const llm = options.llm ?? options.agent?.llm;
+    if (!options.stt) {
+      throw new Error("Orchestrator requires an STT provider");
+    }
+    if (options.agent && !llm) {
       throw new Error(
-        "Orchestrator requires an LLM: pass one explicitly or configure the agent with one",
+        "Orchestrator requires an LLM when an agent is attached: " +
+          "pass one explicitly or configure the agent with one",
       );
+    }
+    if (options.agent && !options.tts) {
+      throw new Error("Orchestrator requires a TTS provider when an agent is attached");
     }
     this.conversation = options.conversation;
     this.agent = options.agent;
@@ -155,8 +167,8 @@ export class Orchestrator {
     if (!this.started) return;
     this.started = false;
     this.epoch++;
-    this.llm.stop();
-    this.tts.stop();
+    this.llm?.stop();
+    this.tts?.stop();
     this.cancelToolWaiters("conversation stopped");
     this.speechBuffer = "";
     for (const unsubscribe of this.unsubscribers) unsubscribe();
@@ -268,7 +280,9 @@ export class Orchestrator {
         role: "user",
         content: `${turn.participantName}: ${turn.text}`,
       });
-      this.queueGeneration();
+      if (this.agent) {
+        this.queueGeneration();
+      }
     } finally {
       this.pendingTurns--;
     }
@@ -276,8 +290,8 @@ export class Orchestrator {
 
   private onInterrupt(): void {
     this.epoch++;
-    this.llm.stop();
-    this.tts.stop();
+    this.llm?.stop();
+    this.tts?.stop();
     this.cancelToolWaiters("interrupted");
     this.speechBuffer = "";
   }
@@ -315,33 +329,40 @@ export class Orchestrator {
   }
 
   private async generate(): Promise<void> {
+    const { agent, llm, tts } = this;
+    if (!agent || !llm || !tts) return;
     this.generating = true;
     try {
-      await this.runGeneration(this.epoch);
+      await this.runGeneration(this.epoch, agent, llm, tts);
     } finally {
       this.generating = false;
     }
   }
 
-  private async runGeneration(epoch: number): Promise<void> {
+  private async runGeneration(
+    epoch: number,
+    agent: Agent,
+    llm: LLM,
+    tts: TTS,
+  ): Promise<void> {
     await this.conversation.pushGeneration({
       id: crypto.randomUUID(),
       conversationId: this.conversation.id,
-      agentName: this.agent.name,
+      agentName: agent.name,
       text: "",
       status: "streaming",
       startedAt: Date.now(),
     });
 
-    const definitions: LLMToolDefinition[] = this.agent.tools.map((tool) => ({
+    const definitions: LLMToolDefinition[] = agent.tools.map((tool) => ({
       name: tool.name,
       description: tool.description,
       parameters: tool.parameters ?? { type: "object", properties: {} },
     }));
 
     const messages: LLMMessage[] = [];
-    if (this.agent.context) {
-      messages.push({ role: "system", content: this.agent.context });
+    if (agent.context) {
+      messages.push({ role: "system", content: agent.context });
     }
     messages.push(...this.history);
 
@@ -354,7 +375,7 @@ export class Orchestrator {
         const toolCalls: LLMToolCall[] = [];
         let done = false;
 
-        for await (const event of this.llm.stream({
+        for await (const event of llm.stream({
           messages,
           tools: definitions,
           temperature: this.temperature,
@@ -410,7 +431,7 @@ export class Orchestrator {
 
       await this.conversation.completeGeneration(text);
       await this.conversation.pushTranscript({
-        speaker: this.agent.name,
+        speaker: agent.name,
         speakerKind: "agent",
         text,
       });
@@ -426,7 +447,7 @@ export class Orchestrator {
       await this.conversation.completeGeneration(text);
       if (text) {
         await this.conversation.pushTranscript({
-          speaker: this.agent.name,
+          speaker: agent.name,
           speakerKind: "agent",
           text,
         });
@@ -518,11 +539,13 @@ export class Orchestrator {
 
   /** Synthesize a sentence and push the audio chunks out to the app. */
   private speak(sentence: string): void {
+    const tts = this.tts;
+    if (!tts) return;
     const epoch = this.epoch;
     this.speechChain = this.speechChain.then(async () => {
       if (!this.started || this.epoch !== epoch) return;
       try {
-        for await (const chunk of this.tts.stream({ text: sentence })) {
+        for await (const chunk of tts.stream({ text: sentence })) {
           if (!this.started || this.epoch !== epoch) break;
           this.conversation.pushAudio({
             data: chunk,

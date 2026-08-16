@@ -28,7 +28,7 @@ shaped around but not yet implemented.
 
 | Area | Current | Designed for |
 | --- | --- | --- |
-| Providers | DeepSeek (LLM), Deepgram (STT), Kokoro (TTS) | additional providers behind the same interfaces |
+| Providers | DeepSeek (LLM), Deepgram Flux (STT), Kokoro (TTS) | additional providers behind the same interfaces |
 | Persistence | in-memory, SQLite | Postgres, Redis, … behind the same contract |
 | Transport | in-memory (tests, development) | WebSocket, WebRTC, … |
 | Conversation addressing | agent names and aliases | floor management, multi-participant turn-taking |
@@ -537,6 +537,10 @@ conversation.on("tool-call", async ({ call }) => {
 
 The agent's narration continues while the tool runs, and the generation resumes
 with the tool result once it is resolved.
+
+Tool calls the model requests together run concurrently: `run()` executes
+them in parallel, and in a conversation your backend resolves them in
+parallel.
 
 ## Meeting transcription
 

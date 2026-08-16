@@ -23,7 +23,8 @@ const jarvis = pipeflow.agent({
   See `tools/tools.ts`.
 - **`run()`** — invoke an agent standalone (no conversation): streams the LLM,
   executes any requested tools, and returns the final text plus the full
-  message history and executed tool calls.
+  message history and executed tool calls. Tool calls the model requests
+  together execute concurrently.
 
 ## Agents vs coordinations
 

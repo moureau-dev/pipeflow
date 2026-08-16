@@ -39,10 +39,9 @@ describe("Pipeflow", () => {
     expect(conversation.id).toBeTruthy();
   });
 
-  test("exposes the configured providers and api key", () => {
+  test("exposes the configured providers", () => {
     const llm = new FakeLLM(() => [{ type: "done" }]);
-    const pipeflow = new Pipeflow({ apiKey: "secret", llm });
-    expect(pipeflow.apiKey).toBe("secret");
+    const pipeflow = new Pipeflow({ llm });
     expect(pipeflow.llm).toBe(llm);
     expect(pipeflow.stt).toBeUndefined();
     expect(pipeflow.tts).toBeUndefined();

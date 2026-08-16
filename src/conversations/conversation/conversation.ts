@@ -36,11 +36,19 @@ export interface ConversationEvents {
   turn: { conversationId: ConversationId; turn: Turn };
   transcript: { conversationId: ConversationId; entry: TranscriptEntry };
   generation: { conversationId: ConversationId; generation: Generation };
+  /** Live STT partials, for captions and fast UX. Not persisted. */
+  "partial-transcript": {
+    conversationId: ConversationId;
+    userId: UserId;
+    text: string;
+  };
   /** The model requested a tool call. Resolve it with `resolveToolCall()`. */
   "tool-call": { conversationId: ConversationId; call: ToolCall };
   /** A pending tool call was resolved by the application. */
   "tool-call-result": { conversationId: ConversationId; result: ToolCallResult };
   interrupt: { conversationId: ConversationId };
+  /** A provider failure (STT, LLM, or TTS). */
+  error: { conversationId: ConversationId; error: Error };
   state: { conversationId: ConversationId; state: ConversationState };
 }
 
@@ -270,10 +278,11 @@ export class Conversation {
     this.emitState();
   }
 
-  /** Mark the current generation as completed. */
-  async completeGeneration(): Promise<void> {
+  /** Mark the current generation as completed, recording its final text. */
+  async completeGeneration(text?: string): Promise<void> {
     const generation = this.state.currentGeneration;
     if (generation && generation.status === "streaming") {
+      if (text !== undefined) generation.text = text;
       generation.status = "completed";
       generation.endedAt = Date.now();
       await this.persistence?.appendGeneration(this.id, generation);

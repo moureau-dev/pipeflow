@@ -313,17 +313,19 @@ describe("Conversation", () => {
       id: "gen-1",
       conversationId: "conv-1",
       agentName: "Jarvis",
-      text: "answer",
+      text: "",
       status: "streaming",
       startedAt: 1,
     });
 
-    await conversation.completeGeneration();
+    await conversation.completeGeneration("final answer");
 
     expect(conversation.state.currentGeneration?.status).toBe("completed");
+    expect(conversation.state.currentGeneration?.text).toBe("final answer");
     expect(conversation.state.currentGeneration?.endedAt).toBeDefined();
     const persisted = await persistence.listGenerations("conv-1");
     expect(persisted[0]?.status).toBe("completed");
+    expect(persisted[0]?.text).toBe("final answer");
   });
 
   test("completeGeneration without a streaming generation is a no-op", async () => {

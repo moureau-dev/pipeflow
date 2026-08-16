@@ -52,7 +52,8 @@ export class Agent {
   readonly name: string;
   readonly context: string;
   private readonly toolRegistry = new Map<string, Tool<never, unknown>>();
-  private readonly llm: LLM | undefined;
+  /** LLM provider used by `run()` and the orchestrator. */
+  readonly llm: LLM | undefined;
 
   constructor(options: AgentOptions) {
     const name = options.name.trim();

@@ -62,6 +62,7 @@ export type { ToolOptions } from "./agents/tools/tools.ts";
 export {
   Conversation,
   Conversations,
+  Orchestrator,
   Transcription,
   TranscriptEntry,
 } from "./conversations/index.ts";
@@ -75,6 +76,7 @@ export type {
   CreateConversationOptions,
   Generation,
   GenerationStatus,
+  OrchestratorOptions,
   Participant,
   ParticipantInput,
   ToolCall,

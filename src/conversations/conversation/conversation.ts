@@ -17,6 +17,7 @@ import {
   type TranscriptEntry,
   type TranscriptEntryInput,
 } from "../transcription/transcription.ts";
+import type { ToolCall, ToolCallResult } from "../types.ts";
 
 export interface ConversationOptions {
   id: ConversationId;
@@ -35,6 +36,10 @@ export interface ConversationEvents {
   turn: { conversationId: ConversationId; turn: Turn };
   transcript: { conversationId: ConversationId; entry: TranscriptEntry };
   generation: { conversationId: ConversationId; generation: Generation };
+  /** The model requested a tool call. Resolve it with `resolveToolCall()`. */
+  "tool-call": { conversationId: ConversationId; call: ToolCall };
+  /** A pending tool call was resolved by the application. */
+  "tool-call-result": { conversationId: ConversationId; result: ToolCallResult };
   interrupt: { conversationId: ConversationId };
   state: { conversationId: ConversationId; state: ConversationState };
 }
@@ -45,8 +50,8 @@ export interface ConversationEvents {
  * A `Conversation` is a runtime handle to a persistent conversation:
  * lifecycle (`start`/`stop`), participants, audio intake (`listen`), and
  * events. The orchestrator (added later) subscribes to `audio-in` and
- * pushes generated audio, turns, and transcripts back through the
- * `push*` methods.
+ * pushes generated audio, turns, transcripts, and tool calls back through
+ * the `push*`/`requestToolCall` methods.
  */
 export class Conversation {
   readonly id: ConversationId;
@@ -58,6 +63,7 @@ export class Conversation {
     keyof ConversationEvents,
     Set<(payload: never) => void>
   >();
+  private readonly pendingToolCallsById = new Map<string, ToolCall>();
   private nextAudioSequence = 0;
 
   constructor(options: ConversationOptions) {
@@ -89,6 +95,7 @@ export class Conversation {
   async stop(): Promise<void> {
     if (this.state.status === "stopped") return;
     this.state.status = "stopped";
+    this.pendingToolCallsById.clear();
     const cancelled = this.cancelCurrentGeneration();
     if (cancelled) {
       await this.persistence?.appendGeneration(this.id, cancelled);
@@ -230,6 +237,36 @@ export class Conversation {
     this.state.currentGeneration = generation;
     this.emit("generation", { conversationId: this.id, generation });
     await this.persistence?.appendGeneration(this.id, generation);
+    this.emitState();
+  }
+
+  // -------------------------------------------------------------------------
+  // Orchestrator-facing tool calls
+  // -------------------------------------------------------------------------
+
+  /** Tool calls requested by the model that are awaiting resolution. */
+  get pendingToolCalls(): ToolCall[] {
+    return [...this.pendingToolCallsById.values()];
+  }
+
+  /**
+   * Track and emit a tool call requested by the model. The application
+   * listens for `tool-call` events, executes the tool in its own backend,
+   * and reports back through `resolveToolCall()`.
+   */
+  requestToolCall(call: ToolCall): void {
+    this.pendingToolCallsById.set(call.id, call);
+    this.emit("tool-call", { conversationId: this.id, call });
+    this.emitState();
+  }
+
+  /** Resolve a pending tool call with a result or an error. */
+  resolveToolCall(result: ToolCallResult): void {
+    if (!this.pendingToolCallsById.has(result.id)) {
+      throw new Error(`No pending tool call "${result.id}"`);
+    }
+    this.pendingToolCallsById.delete(result.id);
+    this.emit("tool-call-result", { conversationId: this.id, result });
     this.emitState();
   }
 

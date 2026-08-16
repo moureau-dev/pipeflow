@@ -49,10 +49,10 @@ export class Pipeflow {
 }
 
 // ---------------------------------------------------------------------------
-// Public API exports
+// Core public API
 // ---------------------------------------------------------------------------
 
-export { Agent } from "./agents/agent.ts";
+export { Agent };
 export type {
   AgentOptions,
   AgentRunRequest,
@@ -70,42 +70,38 @@ export {
 } from "./conversations/index.ts";
 export type {
   AudioChunk,
+  ConversationEvents,
   ConversationId,
+  ConversationOptions,
   ConversationState,
   ConversationStatus,
+  CreateConversationOptions,
   Generation,
   GenerationStatus,
   Participant,
   ParticipantInput,
-  Turn,
-  TurnId,
+  ToolCall,
+  ToolCallResult,
   TranscriptEntryInput,
   TranscriptSpeakerKind,
+  Turn,
+  TurnId,
   UserId,
 } from "./conversations/index.ts";
 
-export { MemoryPersistence, SQLitePersistence } from "./persistence/index.ts";
-export type {
-  ConversationRecord,
-  NewConversation,
-  Persistence,
-} from "./persistence/index.ts";
+// ---------------------------------------------------------------------------
+// Configuration interfaces.
+//
+// Provider and persistence *implementations* are intentionally not exported
+// from the main entry — they are replaceable implementation detail. Import
+// them from their module subpaths when needed:
+//
+//   import { DeepSeekLLM } from "pipeflow/providers";
+//   import { SQLitePersistence } from "pipeflow/persistence";
+//   import { MemoryTransport } from "pipeflow/transport";
+// ---------------------------------------------------------------------------
 
-export { complete, streamText, DeepSeekLLM, DeepgramSTT, KokoroTTS } from "./providers/index.ts";
-export type {
-  LLM,
-  LLMEvent,
-  LLMMessage,
-  LLMRole,
-  LLMToolCall,
-  LLMToolDefinition,
-  LLMRequest,
-  STT,
-  STTOptions,
-  STTSession,
-  TTS,
-  TTSRequest,
-} from "./providers/index.ts";
-
-export { MemoryTransport } from "./transport/index.ts";
-export type { Message, Transport } from "./transport/index.ts";
+export type { LLM, LLMMessage } from "./providers/llm/types.ts";
+export type { STT } from "./providers/stt/types.ts";
+export type { TTS } from "./providers/tts/types.ts";
+export type { Persistence } from "./persistence/persistence.ts";

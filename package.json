@@ -1,8 +1,14 @@
 {
   "name": "pipeflow",
-  "module": "index.ts",
+  "module": "./src/index.ts",
   "type": "module",
   "private": true,
+  "exports": {
+    ".": "./src/index.ts",
+    "./providers": "./src/providers/index.ts",
+    "./persistence": "./src/persistence/index.ts",
+    "./transport": "./src/transport/index.ts"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },

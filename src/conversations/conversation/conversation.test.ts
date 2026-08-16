@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { Conversation } from "./conversation.ts";
 import { MemoryPersistence } from "../../persistence/adapters/memory/memory.ts";
-import type { Generation, Turn } from "../types.ts";
+import type { Generation, ToolCall, ToolCallResult, Turn } from "../types.ts";
 
 function makeConversation(
   options: { withPersistence?: boolean } = {},
@@ -367,5 +367,75 @@ describe("Conversation", () => {
     await conversation.stop();
 
     expect(statuses).toEqual(["started", "stopped"]);
+  });
+
+  test("requestToolCall emits a tool-call event and tracks the call as pending", () => {
+    const { conversation } = makeConversation();
+    const calls: ToolCall[] = [];
+    conversation.on("tool-call", (payload) => calls.push(payload.call));
+
+    const call: ToolCall = {
+      id: "call_1",
+      name: "get_weather",
+      arguments: { city: "Paris" },
+    };
+    conversation.requestToolCall(call);
+
+    expect(calls).toEqual([call]);
+    expect(conversation.pendingToolCalls).toEqual([call]);
+  });
+
+  test("resolveToolCall with a result resolves the pending call", () => {
+    const { conversation } = makeConversation();
+    conversation.requestToolCall({ id: "call_1", name: "get_weather", arguments: {} });
+
+    const results: ToolCallResult[] = [];
+    conversation.on("tool-call-result", (payload) => results.push(payload.result));
+
+    conversation.resolveToolCall({ id: "call_1", result: "sunny in Paris" });
+
+    expect(results).toEqual([{ id: "call_1", result: "sunny in Paris" }]);
+    expect(conversation.pendingToolCalls).toEqual([]);
+  });
+
+  test("resolveToolCall with an error resolves the pending call", () => {
+    const { conversation } = makeConversation();
+    conversation.requestToolCall({ id: "call_1", name: "get_weather", arguments: {} });
+
+    conversation.resolveToolCall({ id: "call_1", error: "provider down" });
+
+    expect(conversation.pendingToolCalls).toEqual([]);
+  });
+
+  test("resolving an unknown call id throws", () => {
+    const { conversation } = makeConversation();
+    expect(() =>
+      conversation.resolveToolCall({ id: "missing", result: "x" }),
+    ).toThrow(/No pending tool call "missing"/);
+  });
+
+  test("pending tool calls are tracked independently", () => {
+    const { conversation } = makeConversation();
+    conversation.requestToolCall({ id: "call_1", name: "tool_a", arguments: {} });
+    conversation.requestToolCall({ id: "call_2", name: "tool_b", arguments: {} });
+
+    conversation.resolveToolCall({ id: "call_1", result: "done" });
+
+    expect(conversation.pendingToolCalls).toEqual([
+      { id: "call_2", name: "tool_b", arguments: {} },
+    ]);
+  });
+
+  test("stop clears pending tool calls", async () => {
+    const { conversation } = makeConversation();
+    conversation.requestToolCall({ id: "call_1", name: "get_weather", arguments: {} });
+
+    conversation.start();
+    await conversation.stop();
+
+    expect(conversation.pendingToolCalls).toEqual([]);
+    expect(() =>
+      conversation.resolveToolCall({ id: "call_1", result: "too late" }),
+    ).toThrow(/No pending tool call/);
   });
 });

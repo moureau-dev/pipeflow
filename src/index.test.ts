@@ -3,19 +3,22 @@ import {
   Agent,
   Conversation,
   Conversations,
-  DeepSeekLLM,
-  DeepgramSTT,
-  KokoroTTS,
-  MemoryPersistence,
-  MemoryTransport,
   Pipeflow,
   PipeflowTool,
-  SQLitePersistence,
   Tool,
   Transcription,
   TranscriptEntry,
 } from "./index.ts";
-import type { LLM, LLMEvent, LLMRequest } from "./index.ts";
+import {
+  DeepSeekLLM,
+  DeepgramSTT,
+  KokoroTTS,
+  complete,
+  streamText,
+} from "./providers/index.ts";
+import { MemoryPersistence, SQLitePersistence } from "./persistence/index.ts";
+import { MemoryTransport } from "./transport/index.ts";
+import type { LLM, LLMEvent, LLMRequest } from "./providers/index.ts";
 
 class FakeLLM implements LLM {
   readonly requests: LLMRequest[] = [];
@@ -139,12 +142,26 @@ describe("public exports", () => {
     expect(typeof Tool).toBe("function");
   });
 
-  test("provider adapters are exported", () => {
+  test("provider and adapter implementations are exported from subpaths", () => {
     expect(DeepSeekLLM.name).toBe("DeepSeekLLM");
     expect(DeepgramSTT.name).toBe("DeepgramSTT");
     expect(KokoroTTS.name).toBe("KokoroTTS");
     expect(MemoryPersistence.name).toBe("MemoryPersistence");
     expect(SQLitePersistence.name).toBe("SQLitePersistence");
     expect(MemoryTransport.name).toBe("MemoryTransport");
+    expect(typeof complete).toBe("function");
+    expect(typeof streamText).toBe("function");
+  });
+
+  test("the main entry does not leak implementation detail", async () => {
+    const index = await import("./index.ts");
+    expect("DeepSeekLLM" in index).toBe(false);
+    expect("DeepgramSTT" in index).toBe(false);
+    expect("KokoroTTS" in index).toBe(false);
+    expect("SQLitePersistence" in index).toBe(false);
+    expect("MemoryPersistence" in index).toBe(false);
+    expect("MemoryTransport" in index).toBe(false);
+    expect("complete" in index).toBe(false);
+    expect("streamText" in index).toBe(false);
   });
 });

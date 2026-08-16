@@ -53,6 +53,21 @@ export interface Generation {
 }
 
 // ---------------------------------------------------------------------------
+// Tool calls
+// ---------------------------------------------------------------------------
+
+export interface ToolCall {
+  id: string;
+  name: string;
+  /** Parsed arguments, or the raw JSON string if parsing failed. */
+  arguments: unknown;
+}
+
+export type ToolCallResult =
+  | { id: string; result: unknown }
+  | { id: string; error: string };
+
+// ---------------------------------------------------------------------------
 // Audio
 // ---------------------------------------------------------------------------
 

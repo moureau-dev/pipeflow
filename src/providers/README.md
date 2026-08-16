@@ -59,7 +59,7 @@ import { DeepSeekLLM, DeepgramSTT, KokoroTTS } from "@moureau/pipeflow/providers
 const pipeflow = new Pipeflow({
   llm: new DeepSeekLLM({ apiKey: process.env.DEEPSEEK_API_KEY }),
   stt: new DeepgramSTT({ apiKey: process.env.DEEPGRAM_API_KEY }),
-  tts: new KokoroTTS({ url: "http://localhost:8880" }),
+  tts: new KokoroTTS({ baseUrl: "http://localhost:8880" }),
 });
 ```
 

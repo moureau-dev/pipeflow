@@ -1,15 +1,18 @@
 // Real-LLM latency benchmark. Requires DEEPSEEK_API_KEY (loaded from .env).
 // Runs the single-agent voice pipeline N times against the real model and
-// reports p50/p95 per latency hop. STT/TTS are faked: this measures
-// orchestration + LLM, not real TTS/transport.
+// reports p50/p95 per latency hop. STT is faked; TTS is faked unless
+// KOKORO_URL points at a running Kokoro server, in which case the real
+// synthesis path — including inter-chunk audio gaps — is measured.
 //
-//   bun run benchmark          # 10 runs
-//   BENCH_RUNS=5 bun run benchmark
+//   bun run benchmark                                        # 10 runs, fake TTS
+//   BENCH_RUNS=5 bun run benchmark                           # fewer runs
+//   KOKORO_URL=http://localhost:8880 bun run benchmark       # real Kokoro TTS
 
 import { Agent } from "../src/agents/agent";
 import { Conversations } from "../src/conversations/conversations";
 import { MemoryPersistence } from "../src/persistence/adapters/memory/memory";
 import { DeepSeekLLM } from "../src/providers/llm/adapters/deepseek/deepseek";
+import { KokoroTTS } from "../src/providers/tts/adapters/kokoro/kokoro";
 import type { STT, STTOptions, STTSession } from "../src/providers/stt/types";
 import type { TTS, TTSRequest } from "../src/providers/tts/types";
 import type { GenerationTiming } from "../src/conversations/types";
@@ -28,6 +31,11 @@ const MODEL = "deepseek-v4-flash";
 // boundaries and length flushes) rather than one long buffered sentence.
 const PROMPT =
   "In two or three short sentences, what is Pipeflow? Keep each sentence brief.";
+
+// When set, the benchmark uses the real Kokoro adapter against this server;
+// otherwise TTS is faked (synthetic, single-chunk) and the TTS hop is
+// orchestration-only.
+const KOKORO_URL = process.env.KOKORO_URL;
 
 // ---------------------------------------------------------------------------
 // Fakes (kept local: the e2e fakes are test-only and not exported)
@@ -76,6 +84,10 @@ class FakeTTS implements TTS {
 // ---------------------------------------------------------------------------
 
 const samples = new Map<string, number[]>();
+// Inter-chunk audio gaps, accumulated across runs. Only meaningful with real
+// TTS: the fake yields a single chunk per sentence.
+const gapSamples: number[] = [];
+let totalChunks = 0;
 
 function record(name: string, value: number | undefined, base: number): void {
   if (value === undefined) return;
@@ -96,7 +108,9 @@ function format(value: number): string {
 
 async function runOnce(): Promise<void> {
   const stt = new FakeSTT();
-  const tts = new FakeTTS();
+  const tts: TTS = KOKORO_URL
+    ? new KokoroTTS({ baseUrl: KOKORO_URL })
+    : new FakeTTS();
   const persistence = new MemoryPersistence();
   const api = new Conversations({ persistence, stt, tts });
   const llm = new DeepSeekLLM({ apiKey: key, model: MODEL });
@@ -110,6 +124,12 @@ async function runOnce(): Promise<void> {
       }),
     ],
   });
+
+  // Timestamp every delivered audio chunk: the first marks the delivery hop,
+  // the rest feed the audio-continuity (inter-chunk gap) metric.
+  const audioEvents: number[] = [];
+  conversation.on("audio", () => audioEvents.push(Date.now()));
+
   await conversation.start();
   await conversation.participate({ userId: "alice", aliases: ["al"] });
 
@@ -138,27 +158,46 @@ async function runOnce(): Promise<void> {
   const base = turn?.startedAt ?? 0;
   record("Generation start", startedAt || undefined, base);
   record("LLM first token", timing?.firstTokenAt, base);
-  record("First TTS text", timing?.firstTtsTextAt, base);
-  record("First audio", timing?.firstAudioAt, base);
+  record("First speechable text", timing?.firstTtsTextAt, base);
+  record("TTS request", timing?.firstTtsRequestAt, base);
+  record("TTS first audio", timing?.firstTtsAudioAt, base);
+  record("First audio delivered", timing?.firstAudioAt, base);
+  record("Last audio delivered", audioEvents.at(-1), base);
   record("Completion", timing?.completedAt, base);
+
+  if (KOKORO_URL && audioEvents.length > 1) {
+    totalChunks += audioEvents.length;
+    for (let i = 1; i < audioEvents.length; i++) {
+      gapSamples.push(audioEvents[i]! - audioEvents[i - 1]!);
+    }
+  }
 }
 
-console.log(`benchmark: ${RUNS} runs, model ${MODEL}, TTS: fake`);
+const ttsLabel = KOKORO_URL ? `kokoro (${KOKORO_URL})` : "fake";
+console.log(`benchmark: ${RUNS} runs, model ${MODEL}, TTS: ${ttsLabel}`);
 for (let i = 0; i < RUNS; i++) {
   process.stdout.write(`  run ${i + 1}/${RUNS}…`);
   await runOnce();
   console.log(" done");
 }
 
-console.log(`\nPipeflow latency (${RUNS} runs, model ${MODEL})`);
-console.log("──────────────────────────────────────────────");
-console.log(`${"".padEnd(18)} ${"p50".padStart(10)} ${"p95".padStart(10)}`);
-const headline = ["LLM first token", "First TTS text", "First audio", "Completion"] as const;
+console.log(`\nPipeflow latency (${RUNS} runs, model ${MODEL}, TTS: ${ttsLabel})`);
+console.log("──────────────────────────────────────────────────────────");
+console.log(`${"".padEnd(22)} ${"p50".padStart(10)} ${"p95".padStart(10)}`);
+const headline = [
+  "LLM first token",
+  "First speechable text",
+  "TTS request",
+  "TTS first audio",
+  "First audio delivered",
+  "Last audio delivered",
+  "Completion",
+] as const;
 for (const name of headline) {
   const values = (samples.get(name) ?? []).sort((a, b) => a - b);
   const p50 = format(percentile(values, 0.5));
   const p95 = format(percentile(values, 0.95));
-  console.log(`${name.padEnd(18)} ${p50.padStart(10)} ${p95.padStart(10)}`);
+  console.log(`${name.padEnd(22)} ${p50.padStart(10)} ${p95.padStart(10)}`);
 }
 
 const startValues = (samples.get("Generation start") ?? []).sort((a, b) => a - b);
@@ -166,4 +205,15 @@ const overhead = format(percentile(startValues, 0.5));
 console.log(
   `\nPipeflow orchestration overhead: ${overhead} at p50 (turn → generation start).`,
 );
+
+if (KOKORO_URL && gapSamples.length > 0) {
+  const sorted = [...gapSamples].sort((a, b) => a - b);
+  const avg = sorted.reduce((a, b) => a + b, 0) / sorted.length;
+  console.log(
+    `\nAudio continuity: ${totalChunks} chunks, avg gap ${format(avg)}, ` +
+      `p50 ${format(percentile(sorted, 0.5))}, ` +
+      `p95 ${format(percentile(sorted, 0.95))}, max ${format(sorted.at(-1)!)}`,
+  );
+  console.log("Small, stable gaps mean smooth playback; a 100ms+ outlier is audible.");
+}
 console.log("All times relative to the turn boundary.");

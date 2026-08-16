@@ -21,6 +21,19 @@ It handles the plumbing between audio, speech-to-text, LLMs, text-to-speech, con
 
 The API is evolving and should be considered experimental.
 
+## Current vs. designed for
+
+Some capabilities ship today; others are architectural boundaries the API is
+shaped around but not yet implemented.
+
+| Area | Current | Designed for |
+| --- | --- | --- |
+| Providers | DeepSeek (LLM), Deepgram (STT), Kokoro (TTS) | additional providers behind the same interfaces |
+| Persistence | in-memory, SQLite | Postgres, Redis, … behind the same contract |
+| Transport | in-memory (tests, development) | WebSocket, WebRTC, … |
+| Conversation addressing | agent names and aliases | floor management, multi-participant turn-taking |
+| Realtime bounds | step-bounded coordination graph | hierarchical latency budgets |
+
 ## Philosophy
 
 Pipeflow has four core concepts:
@@ -847,10 +860,14 @@ bun run test:e2e
 ```
 
 The latency benchmark runs the pipeline repeatedly against the real model and
-reports p50/p95 per hop (TTFT, first TTS text, first audio, completion):
+reports p50/p95 per hop: first token, first speechable text, TTS request, TTS
+first audio, first audio delivered, and completion. STT and TTS are faked by
+default; point `KOKORO_URL` at a running Kokoro server to measure the real
+synthesis path, including inter-chunk audio gaps:
 
 ```bash
-bun run benchmark        # 10 runs; BENCH_RUNS=5 to change
+bun run benchmark                                  # 10 runs; BENCH_RUNS=5 to change
+KOKORO_URL=http://localhost:8880 bun run benchmark # real Kokoro TTS
 ```
 
 Build and type-check:

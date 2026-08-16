@@ -7,7 +7,6 @@ import type { STT } from "./providers/stt/types.ts";
 import type { TTS } from "./providers/tts/types.ts";
 
 export interface PipeflowOptions {
-  apiKey?: string;
   llm?: LLM;
   stt?: STT;
   tts?: TTS;
@@ -24,14 +23,12 @@ export interface PipeflowOptions {
  * ```
  */
 export class Pipeflow {
-  readonly apiKey: string | undefined;
   readonly llm: LLM | undefined;
   readonly stt: STT | undefined;
   readonly tts: TTS | undefined;
   readonly conversations: Conversations;
 
   constructor(options: PipeflowOptions = {}) {
-    this.apiKey = options.apiKey;
     this.llm = options.llm;
     this.stt = options.stt;
     this.tts = options.tts;

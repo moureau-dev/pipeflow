@@ -17,7 +17,7 @@ export interface PipeflowOptions {
  * The Pipeflow entry point.
  *
  * ```ts
- * const pipeflow = new Pipeflow({ apiKey });
+ * const pipeflow = new Pipeflow({ llm });
  * const agent = pipeflow.agent({ name: "Jarvis", context: "..." });
  * const conversation = await pipeflow.conversations.create({ agents: [agent] });
  * ```

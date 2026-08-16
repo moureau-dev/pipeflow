@@ -1,4 +1,5 @@
 import type { Agent } from "../../../agents/agent";
+import { z } from "zod";
 import type { LLM, LLMMessage, LLMToolCall, LLMToolDefinition } from "../../../providers/llm/types";
 
 // ---------------------------------------------------------------------------
@@ -24,10 +25,10 @@ export interface DelegationResult {
 
 /** What a coordination's LLM may decide to do next. */
 export type DelegateAction =
-  | { type: "agents"; tasks: DelegatedTask[] }
-  | { type: "coordination"; coordination: string; input: unknown }
-  | { type: "user"; question: string }
-  | { type: "complete"; output: string };
+  | { action: "agents"; tasks: DelegatedTask[] }
+  | { action: "coordination"; coordination: string; input?: unknown }
+  | { action: "user"; question: string }
+  | { action: "complete"; output: string };
 
 /**
  * The runtime a coordination reasons against: the roster, every registered
@@ -125,10 +126,65 @@ export class CoordinationBudgetExceeded extends Error {
 // Delegate tool
 // ---------------------------------------------------------------------------
 
+const DELEGATE_DESCRIPTION =
+  "Decide what should happen next in order to produce the desired result. " +
+  "You may run one or more agents (each with a self-contained prompt), pass the work to " +
+  "another coordination, ask the user for missing information, or complete with the final " +
+  "spoken answer. Only ever take one action per call.";
+
+/** Non-empty zod enum, or a plain string when there are no targets. */
+function targetsEnum(targets: string[]): z.ZodType<string> {
+  return targets.length > 0
+    ? z.enum(targets as [string, ...string[]])
+    : z.string();
+}
+
+/**
+ * The strict schema a coordination's LLM output must satisfy. A discriminated
+ * union on `action` — each variant carries exactly its own fields.
+ */
+function delegateActionSchema(
+  agents: readonly Agent[],
+  coordinations: readonly Coordination[],
+): z.ZodType<DelegateAction> {
+  const agentTargets = agents.map((agent) => [agent.name, ...agent.aliases]).flat();
+  const coordinationTargets = coordinations.map((coordination) => coordination.name);
+  return z.discriminatedUnion("action", [
+    z.object({
+      action: z.literal("agents"),
+      tasks: z
+        .array(
+          z.object({
+            agent: targetsEnum(agentTargets).describe("Agent name or alias from the roster."),
+            prompt: z.string().describe("Self-contained instruction for that agent."),
+          }),
+        )
+        .describe("Agents to run in parallel.")
+        .min(1, "at least one task is required"),
+    }),
+    z.object({
+      action: z.literal("coordination"),
+      coordination: targetsEnum(coordinationTargets).describe(
+        "The coordination to pass the work to.",
+      ),
+      input: z.unknown().describe("Input for the delegated coordination.").optional(),
+    }),
+    z.object({
+      action: z.literal("user"),
+      question: z.string().min(1, "a question is required").describe("Clarifying question for the user."),
+    }),
+    z.object({
+      action: z.literal("complete"),
+      output: z.string().min(1, "an output is required").describe("The final spoken answer."),
+    }),
+  ]);
+}
+
 /**
  * The tool definition that lets a coordination's LLM choose the next execution
  * target: agents (one or more, in parallel), another coordination, the user,
- * or completion.
+ * or completion. The parameters are generated from the zod schema, flattened
+ * so any provider's tool-calling accepts them.
  */
 export function delegateToolDefinition(
   agents: readonly Agent[],
@@ -136,124 +192,59 @@ export function delegateToolDefinition(
 ): LLMToolDefinition {
   const agentTargets = agents.map((agent) => [agent.name, ...agent.aliases]).flat();
   const coordinationTargets = coordinations.map((coordination) => coordination.name);
-  return {
-    name: "delegate",
-    description:
-      "Decide what should happen next in order to produce the desired result. " +
-      "You may run one or more agents (each with a self-contained prompt), pass the work to " +
-      "another coordination, ask the user for missing information, or complete with the final " +
-      "spoken answer. Only ever take one action per call.",
-    parameters: {
-      type: "object",
-      properties: {
-        action: {
-          type: "string",
-          enum: ["agents", "coordination", "user", "complete"],
-          description: "What to do next.",
-        },
-        tasks: {
-          type: "array",
-          description: "Agents to run in parallel (action 'agents').",
-          items: {
-            type: "object",
-            properties: {
-              agent: {
-                type: "string",
-                description: "Agent name or alias from the roster.",
-                enum: agentTargets,
-              },
-              prompt: {
-                type: "string",
-                description: "Self-contained instruction for that agent.",
-              },
-            },
-            required: ["agent", "prompt"],
-          },
-        },
-        coordination: {
-          type: "string",
-          description: "The coordination to pass the work to (action 'coordination').",
-          enum: coordinationTargets,
-        },
-        input: {
-          description: "Input for the delegated coordination (action 'coordination').",
-        },
-        question: {
-          type: "string",
-          description: "Clarifying question for the user (action 'user').",
-        },
-        output: {
-          type: "string",
-          description: "The final spoken answer (action 'complete').",
-        },
-      },
-      required: ["action"],
-    },
-  };
+  const parameters = z.object({
+    action: z
+      .enum(["agents", "coordination", "user", "complete"])
+      .describe("What to do next."),
+    tasks: z
+      .array(
+        z.object({
+          agent: targetsEnum(agentTargets).describe("Agent name or alias from the roster."),
+          prompt: z.string().describe("Self-contained instruction for that agent."),
+        }),
+      )
+      .describe("Agents to run in parallel (action 'agents').")
+      .optional(),
+    coordination: targetsEnum(coordinationTargets)
+      .describe("The coordination to pass the work to (action 'coordination').")
+      .optional(),
+    input: z
+      .unknown()
+      .describe("Input for the delegated coordination (action 'coordination').")
+      .optional(),
+    question: z
+      .string()
+      .describe("Clarifying question for the user (action 'user').")
+      .optional(),
+    output: z
+      .string()
+      .describe("The final spoken answer (action 'complete').")
+      .optional(),
+  });
+  const jsonSchema = z.toJSONSchema(parameters) as Record<string, unknown>;
+  delete jsonSchema.$schema;
+  return { name: "delegate", description: DELEGATE_DESCRIPTION, parameters: jsonSchema };
 }
 
-export function parseDelegateAction(argumentsJson: string): DelegateAction {
+export function parseDelegateAction(
+  argumentsJson: string,
+  agents: readonly Agent[],
+  coordinations: readonly Coordination[],
+): DelegateAction {
   let parsed: unknown;
   try {
     parsed = JSON.parse(argumentsJson);
   } catch {
     throw new Error("delegate arguments must be valid JSON");
   }
-  const record = (parsed ?? {}) as {
-    action?: unknown;
-    tasks?: unknown;
-    coordination?: unknown;
-    input?: unknown;
-    question?: unknown;
-    output?: unknown;
-  };
-
-  switch (record.action) {
-    case "agents": {
-      if (!Array.isArray(record.tasks) || record.tasks.length === 0) {
-        throw new Error('delegate action "agents" requires a non-empty "tasks" array');
-      }
-      return {
-        type: "agents",
-        tasks: record.tasks.map((task, index) => {
-          const item = (task ?? {}) as { agent?: unknown; prompt?: unknown };
-          if (typeof item.agent !== "string" || item.agent.trim() === "") {
-            throw new Error(`delegate task ${index + 1} requires an agent name`);
-          }
-          if (typeof item.prompt !== "string" || item.prompt.trim() === "") {
-            throw new Error(`delegate task ${index + 1} requires a prompt`);
-          }
-          return { agent: item.agent.trim(), prompt: item.prompt.trim() };
-        }),
-      };
-    }
-    case "coordination": {
-      if (typeof record.coordination !== "string" || record.coordination.trim() === "") {
-        throw new Error('delegate action "coordination" requires a coordination name');
-      }
-      return {
-        type: "coordination",
-        coordination: record.coordination.trim(),
-        input: record.input,
-      };
-    }
-    case "user": {
-      if (typeof record.question !== "string" || record.question.trim() === "") {
-        throw new Error('delegate action "user" requires a question');
-      }
-      return { type: "user", question: record.question.trim() };
-    }
-    case "complete": {
-      if (typeof record.output !== "string" || record.output.trim() === "") {
-        throw new Error('delegate action "complete" requires an output');
-      }
-      return { type: "complete", output: record.output.trim() };
-    }
-    default:
-      throw new Error(
-        `delegate action must be one of "agents", "coordination", "user", "complete"`,
-      );
+  const result = delegateActionSchema(agents, coordinations).safeParse(parsed);
+  if (!result.success) {
+    const details = result.error.issues
+      .map((issue) => (issue.path.length > 0 ? `${issue.path.join(".")}: ${issue.message}` : issue.message))
+      .join("; ");
+    throw new Error(`invalid delegate arguments: ${details}`);
   }
+  return result.data;
 }
 
 // ---------------------------------------------------------------------------
@@ -274,6 +265,8 @@ export class Coordination {
   readonly maxDurationMs: number | undefined;
   private readonly runtime: CoordinationRuntime;
   private readonly llm: LLM;
+  private cachedToolDefinition: LLMToolDefinition | null = null;
+  private cachedSchema: ReturnType<typeof delegateActionSchema> | null = null;
 
   constructor(options: CoordinationOptions, runtime: CoordinationRuntime) {
     if (!options.name.trim()) {
@@ -285,6 +278,41 @@ export class Coordination {
     this.maxDurationMs = options.maxDurationMs;
     this.runtime = runtime;
     this.llm = options.llm ?? runtime.llm;
+  }
+
+  /** The delegate tool definition, generated once from the roster. */
+  private toolDefinition(): LLMToolDefinition {
+    this.cachedToolDefinition ??= delegateToolDefinition(
+      this.runtime.agents,
+      this.runtime.coordinations,
+    );
+    return this.cachedToolDefinition;
+  }
+
+  /** Parse a `delegate` tool call against the roster's strict schema. */
+  private parseDelegate(argumentsJson: string): DelegateAction {
+    this.cachedSchema ??= delegateActionSchema(
+      this.runtime.agents,
+      this.runtime.coordinations,
+    );
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(argumentsJson);
+    } catch {
+      throw new Error("delegate arguments must be valid JSON");
+    }
+    const result = this.cachedSchema.safeParse(parsed);
+    if (!result.success) {
+      const details = result.error.issues
+        .map((issue) =>
+          issue.path.length > 0
+            ? `${issue.path.join(".")}: ${issue.message}`
+            : issue.message,
+        )
+        .join("; ");
+      throw new Error(`invalid delegate arguments: ${details}`);
+    }
+    return result.data;
   }
 
   /** Run the coordination with fresh state (seeded with the shared history). */
@@ -342,7 +370,7 @@ export class Coordination {
 
       for await (const event of this.llm.stream({
         messages: state.messages,
-        tools: [delegateToolDefinition(this.runtime.agents, this.runtime.coordinations)],
+        tools: [this.toolDefinition()],
         maxTokens: this.maxTokens,
       })) {
         if (this.runtime.isCancelled()) throw new CoordinationCancelled();
@@ -372,7 +400,7 @@ export class Coordination {
         for (const call of toolCalls) {
           let action: DelegateAction;
           try {
-            action = parseDelegateAction(call.arguments);
+            action = this.parseDelegate(call.arguments);
           } catch (error) {
             // Malformed arguments: report to the coordination's LLM so it can
             // recover instead of crashing the run.
@@ -386,7 +414,7 @@ export class Coordination {
             });
             continue;
           }
-          switch (action.type) {
+          switch (action.action) {
             case "agents": {
               const results = await this.runtime.delegateAgentTasks(action.tasks);
               state.messages.push({

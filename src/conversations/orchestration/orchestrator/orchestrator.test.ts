@@ -1003,9 +1003,11 @@ describe("Orchestrator", () => {
       const delegateResult = harness.llm.requests[1]!.messages.at(-1) as {
         content: string;
       };
-      expect(JSON.parse(delegateResult.content)).toEqual([
-        { agent: "Ghost Agent", text: "", error: 'Unknown agent "Ghost Agent"' },
-      ]);
+      // The strict roster enum rejects the unknown agent, and the
+      // coordination recovers from the reported error.
+      expect(JSON.parse(delegateResult.content)).toEqual({
+        error: expect.stringContaining("invalid delegate arguments") as unknown,
+      });
       expect(harness.llm.requests[1]!.messages.at(-1)).toMatchObject({
         role: "tool",
         name: "delegate",

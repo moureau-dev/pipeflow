@@ -131,22 +131,60 @@ class FakeTTS implements TTS {
   }
 }
 
+/**
+ * A TTS that streams one chunk at a time with a delay, so audio is still
+ * mid-flight when an interrupt arrives.
+ */
+class SlowTTS implements TTS {
+  readonly requests: TTSRequest[] = [];
+  private readonly controllers = new Set<AbortController>();
+
+  constructor(
+    private readonly chunksFor: (text: string) => Uint8Array[],
+    private readonly delayMs = 20,
+  ) {}
+
+  async *stream(request: TTSRequest): AsyncGenerator<Uint8Array> {
+    this.requests.push(request);
+    const controller = new AbortController();
+    this.controllers.add(controller);
+    try {
+      for (const chunk of this.chunksFor(request.text)) {
+        await Bun.sleep(this.delayMs);
+        if (controller.signal.aborted) {
+          throw new DOMException("The operation was aborted.", "AbortError");
+        }
+        yield chunk;
+      }
+    } finally {
+      this.controllers.delete(controller);
+    }
+  }
+
+  stop(): void {
+    for (const controller of this.controllers) controller.abort();
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Harness
 // ---------------------------------------------------------------------------
+
+type TtsHarness = FakeTTS | SlowTTS;
 
 interface Harness {
   conversation: Conversation;
   orchestrator: Orchestrator;
   llm: FakeLLM;
   stt: FakeSTT;
-  tts: FakeTTS;
+  tts: TtsHarness;
   persistence: MemoryPersistence;
 }
 
 function setup(options: {
   script: LLMScript;
   ttsChunks?: (text: string) => Uint8Array[];
+  tts?: TtsHarness;
   tools?: Tool<never, unknown>[];
   toolTimeoutMs?: number;
   context?: string;
@@ -156,9 +194,11 @@ function setup(options: {
     const conversation = new Conversation({ id: "conv-1", persistence });
     const llm = new FakeLLM(options.script);
     const stt = new FakeSTT();
-    const tts = new FakeTTS(
-      options.ttsChunks ?? ((text) => [new TextEncoder().encode(text)]),
-    );
+    const tts =
+      options.tts ??
+      new FakeTTS(
+        options.ttsChunks ?? ((text) => [new TextEncoder().encode(text)]),
+      );
     const agent = new Agent({
       name: "Jarvis",
       context: options.context ?? "Be concise.",
@@ -406,12 +446,49 @@ describe("Orchestrator", () => {
     const timing = generation!.timing!;
     expect(timing.startedAt).toBeDefined();
     expect(timing.firstTokenAt).toBeDefined();
+    expect(timing.firstTtsTextAt).toBeDefined();
+    expect(timing.firstTtsRequestAt).toBeDefined();
+    expect(timing.firstTtsAudioAt).toBeDefined();
     expect(timing.firstAudioAt).toBeDefined();
     expect(timing.completedAt).toBeDefined();
-    // The latency chain is ordered: start → first token → first audio → done.
+    // The latency chain is ordered: start → token → buffered text → TTS
+    // request → provider audio → delivered → done.
     expect(timing.startedAt).toBeLessThanOrEqual(timing.firstTokenAt!);
-    expect(timing.firstTokenAt!).toBeLessThanOrEqual(timing.firstAudioAt!);
+    expect(timing.firstTokenAt!).toBeLessThanOrEqual(timing.firstTtsTextAt!);
+    expect(timing.firstTtsTextAt!).toBeLessThanOrEqual(timing.firstTtsRequestAt!);
+    expect(timing.firstTtsRequestAt!).toBeLessThanOrEqual(timing.firstTtsAudioAt!);
+    expect(timing.firstTtsAudioAt!).toBeLessThanOrEqual(timing.firstAudioAt!);
     expect(timing.firstAudioAt!).toBeLessThanOrEqual(timing.completedAt!);
+  });
+
+  test("interrupt stops in-flight TTS audio from reaching the app", async () => {
+    const slowTts = new SlowTTS(
+      (text) => text.split(" ").map((word) => new TextEncoder().encode(word + " ")),
+    );
+    const harness = await setup({
+      script: respond(
+        "The dragon flew over the mountains and then it landed on the castle.",
+      ),
+      tts: slowTts,
+    });
+    const delivered: number[] = [];
+    harness.conversation.on("audio", (payload) =>
+      delivered.push(payload.audio.sequence),
+    );
+
+    harness.conversation.listen({ userId: "alice", audio: new Uint8Array([1]) });
+    harness.stt.sessions[0]!.emitFinal("Tell me about the dragon.");
+    // Wait until audio is actually streaming to the application.
+    await waitFor(() => delivered.length > 0);
+
+    harness.conversation.interrupt();
+    await harness.orchestrator.whenIdle();
+
+    // The remaining synthesized chunks (many were still queued in the slow
+    // TTS stream) never reached the application after the interrupt.
+    const deliveredAtInterrupt = delivered.length;
+    await Bun.sleep(100);
+    expect(delivered.length).toBe(deliveredAtInterrupt);
   });
 
   test("emits partial transcripts for live captions", async () => {
@@ -941,7 +1018,10 @@ describe("Orchestrator", () => {
       )!;
       expect(sub.timing?.firstTokenAt).toBeDefined();
       expect(sub.timing?.completedAt).toBeDefined();
-      // Sub-agents are text-only: no audio is ever delivered for them.
+      // Sub-agents are text-only: no TTS text, request, or audio is ever
+      // recorded for them.
+      expect(sub.timing?.firstTtsTextAt).toBeUndefined();
+      expect(sub.timing?.firstTtsRequestAt).toBeUndefined();
       expect(sub.timing?.firstAudioAt).toBeUndefined();
     });
 

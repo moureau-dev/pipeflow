@@ -1007,7 +1007,7 @@ export class Orchestrator {
           if (this.epoch !== epoch) return this.cancelSubGeneration(id, agent.name);
           switch (event.type) {
             case "delta":
-              if (text.length === 0) this.conversation.noteFirstToken(id);
+              if (text.length === 0) this.conversation.noteTiming("firstToken", id);
               text += event.content;
               break;
             case "tool_call":
@@ -1114,7 +1114,7 @@ export class Orchestrator {
   private feedDelta(delta: string): void {
     // First-token latency for the in-flight generation (agent or
     // coordination — both stream narration through here).
-    this.conversation.noteFirstToken();
+    this.conversation.noteTiming("firstToken");
     this.speechBuffer += delta;
     // Flush every complete sentence so multi-sentence deltas (and deltas
     // that span several sentences) are spoken as separate TTS requests.
@@ -1144,13 +1144,18 @@ export class Orchestrator {
   private speak(sentence: string): void {
     const tts = this.tts;
     if (!tts) return;
+    // Buffering boundary: the first sentence flushed to TTS.
+    this.conversation.noteTiming("firstTtsText");
     const epoch = this.epoch;
     const speechEpoch = this.speechEpoch;
     this.speechChain = this.speechChain.then(async () => {
       if (!this.started || this.epoch !== epoch || this.speechEpoch !== speechEpoch) {
         return;
       }
+      // The TTS provider was asked to synthesize.
+      this.conversation.noteTiming("firstTtsRequest");
       try {
+        let first = true;
         for await (const chunk of tts.stream({ text: sentence })) {
           if (
             !this.started ||
@@ -1158,6 +1163,11 @@ export class Orchestrator {
             this.speechEpoch !== speechEpoch
           ) {
             break;
+          }
+          if (first) {
+            first = false;
+            // The provider produced its first audio chunk.
+            this.conversation.noteTiming("firstTtsAudio");
           }
           this.conversation.pushAudio({
             data: chunk,

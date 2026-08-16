@@ -67,34 +67,30 @@ class FakeSTTSession implements STTSession {
 }
 
 class FakeTTS implements TTS {
-  readonly requests: Array<TTSRequest & { firstChunkAt?: number }> = [];
+  readonly requests: TTSRequest[] = [];
   async *stream(request: TTSRequest): AsyncGenerator<Uint8Array> {
-    const entry = { ...request, firstChunkAt: Date.now() };
-    this.requests.push(entry);
+    this.requests.push(request);
     yield new TextEncoder().encode(request.text);
   }
   stop(): void {}
 }
 
 /**
- * Print the latency timeline of a generation relative to its turn boundary.
- * Generation start and turn boundary are distinct events, so both are shown:
+ * Print the latency timeline of a generation relative to its turn boundary,
+ * with each hop of the pipeline separated:
  *
  * ```text
  * Turn boundary        0ms
  * Generation started +12ms
  * LLM first token   +420ms
- * TTS started       +430ms
- * Audio delivered   +690ms
+ * First TTS text    +480ms
+ * TTS requested     +490ms
+ * TTS first audio   +650ms
+ * Audio delivered   +660ms
  * Generation done  +1800ms
  * ```
  */
-function reportTimeline(
-  label: string,
-  turn: Turn,
-  generation: Generation,
-  ttsRequests: Array<{ firstChunkAt?: number }>,
-): void {
+function reportTimeline(label: string, turn: Turn, generation: Generation): void {
   const base = turn.startedAt;
   const timing: GenerationTiming = generation.timing ?? {
     startedAt: generation.startedAt,
@@ -112,7 +108,9 @@ function reportTimeline(
   row("Turn boundary", turn.startedAt);
   row("Generation started", generation.startedAt);
   row("LLM first token", timing.firstTokenAt);
-  row("TTS started", ttsRequests[0]?.firstChunkAt);
+  row("First TTS text", timing.firstTtsTextAt);
+  row("TTS requested", timing.firstTtsRequestAt);
+  row("TTS first audio", timing.firstTtsAudioAt);
   row("Audio delivered", timing.firstAudioAt);
   row("Generation done", timing.completedAt);
 }
@@ -216,9 +214,12 @@ describe("DeepSeek e2e (requires DEEPSEEK_API_KEY)", () => {
       startedAt: generation.startedAt,
     };
     expect(timing.firstTokenAt).toBeDefined();
+    expect(timing.firstTtsTextAt).toBeDefined();
+    expect(timing.firstTtsRequestAt).toBeDefined();
+    expect(timing.firstTtsAudioAt).toBeDefined();
     expect(timing.firstAudioAt).toBeDefined();
     expect(timing.completedAt).toBeDefined();
-    reportTimeline("conversation pipeline latency", turn!, generation, tts.requests);
+    reportTimeline("conversation pipeline latency", turn!, generation);
   });
 
   e2e("coordinates a multi-agent delegation with the real LLM", async () => {
@@ -281,7 +282,7 @@ describe("DeepSeek e2e (requires DEEPSEEK_API_KEY)", () => {
     // completed marker lands once the specialists' results are merged.
     const [turn] = await persistence.listTurns(conversation.id);
     const coordinatorGen = generations.find((g) => g.agentName === "Jarvis")!;
-    reportTimeline("coordination latency", turn!, coordinatorGen, tts.requests);
+    reportTimeline("coordination latency", turn!, coordinatorGen);
   });
 
   e2e("interrupts a streaming generation and starts fresh on the next turn", async () => {

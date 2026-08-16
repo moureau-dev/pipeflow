@@ -300,17 +300,29 @@ export class Conversation {
   }
 
   /**
-   * Record the first LLM token of a generation. Without an id this targets
-   * the current generation; with one, a dispatched sub-generation.
+   * Record a timing point on a generation. Without an id this targets the
+   * current generation; with one, a dispatched sub-generation. Each point is
+   * recorded at most once.
    */
-  noteFirstToken(generationId?: string): void {
+  noteTiming(
+    point: "firstToken" | "firstTtsText" | "firstTtsRequest" | "firstTtsAudio",
+    generationId?: string,
+  ): void {
     const generation = generationId
       ? this.subGenerations.get(generationId)
       : this.state.currentGeneration;
     if (!generation || generation.status !== "streaming") return;
     const timing = initTiming(generation);
-    if (timing.firstTokenAt !== undefined) return;
-    timing.firstTokenAt = Date.now();
+    const field =
+      point === "firstToken"
+        ? "firstTokenAt"
+        : point === "firstTtsText"
+          ? "firstTtsTextAt"
+          : point === "firstTtsRequest"
+            ? "firstTtsRequestAt"
+            : "firstTtsAudioAt";
+    if (timing[field] !== undefined) return;
+    timing[field] = Date.now();
     void this.persistence?.appendGeneration(this.id, generation).catch(() => {});
     this.emitState();
   }

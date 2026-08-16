@@ -43,15 +43,25 @@ export interface Turn {
 export type GenerationStatus = "streaming" | "completed" | "cancelled";
 
 /**
- * Latency instrumentation for a generation: when it started, when the first
- * LLM token and the first synthesized audio chunk arrived, and when it
- * finished. Times are epoch milliseconds; all are optional except `startedAt`.
+ * Latency instrumentation for a generation. Times are epoch milliseconds;
+ * only `startedAt` is always present. The chain distinguishes each hop:
+ *
+ * ```text
+ * turn → first LLM token → first TTS text (buffering flush)
+ *     → TTS requested → TTS first audio → audio delivered → completed
+ * ```
  */
 export interface GenerationTiming {
   startedAt: number;
   /** First LLM delta of this generation (first-token latency). */
   firstTokenAt?: number;
-  /** First TTS audio chunk delivered to the application (speech latency). */
+  /** First sentence flushed to TTS (text buffering latency). */
+  firstTtsTextAt?: number;
+  /** First TTS stream request issued (queue latency). */
+  firstTtsRequestAt?: number;
+  /** First audio chunk produced by the TTS provider (provider latency). */
+  firstTtsAudioAt?: number;
+  /** First TTS audio chunk delivered to the application (transport latency). */
   firstAudioAt?: number;
   completedAt?: number;
 }

@@ -168,6 +168,36 @@ describe("Agent", () => {
     });
   });
 
+  test("executes a batch of tool calls in parallel", async () => {
+    const slow = new Tool({
+      name: "slow_tool",
+      description: "Takes a while.",
+      execute: async () => {
+        await Bun.sleep(150);
+        return "done";
+      },
+    });
+    const llm = new FakeLLM((request) => {
+      if (request.messages.at(-1)?.role === "tool") {
+        return [{ type: "delta", content: "ok" }, ...done()];
+      }
+      return [
+        { type: "tool_call", id: "call_1", name: "slow_tool", arguments: "{}" },
+        { type: "tool_call", id: "call_2", name: "slow_tool", arguments: "{}" },
+        { type: "tool_call", id: "call_3", name: "slow_tool", arguments: "{}" },
+        ...done(),
+      ];
+    });
+
+    const agent = new Agent({ name: "Jarvis", llm, tools: [slow] });
+    const startedAt = performance.now();
+    await agent.run({ prompt: "hi" });
+    const elapsed = performance.now() - startedAt;
+
+    // Three 150ms calls: parallel ≈150ms, serial ≈450ms.
+    expect(elapsed).toBeLessThan(300);
+  });
+
   test("an unknown tool yields an error result without crashing", async () => {
     const llm = new FakeLLM((request) => {
       if (request.messages.at(-1)?.role === "tool") {

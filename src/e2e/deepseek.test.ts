@@ -12,8 +12,8 @@ import type { Generation, GenerationTiming, Turn } from "../conversations/types"
 // DEEPSEEK_API_KEY in the environment (`.env` is loaded automatically) and
 // are skipped when it is missing, so CI stays green without credentials.
 // STT and TTS are faked — only the LLM is real — which exercises the full
-// conversation pipeline (routing, generations, transcripts, coordination)
-// against a real model.
+// conversation pipeline (routing, generations, transcripts, coordination,
+// multi-tool concurrency) against a real model.
 
 const apiKey = process.env.DEEPSEEK_API_KEY;
 const hasKey = typeof apiKey === "string" && apiKey.length > 0;
@@ -113,6 +113,67 @@ function reportTimeline(label: string, turn: Turn, generation: Generation): void
   row("TTS first audio", timing.firstTtsAudioAt);
   row("Audio delivered", timing.firstAudioAt);
   row("Generation done", timing.completedAt);
+}
+
+interface ToolTiming {
+  label: string;
+  startedAt: number;
+  endedAt: number;
+}
+
+function summarizeConcurrency(timings: ToolTiming[]): {
+  maxConcurrent: number;
+  wall: number;
+  serial: number;
+} {
+  if (timings.length === 0) return { maxConcurrent: 0, wall: 0, serial: 0 };
+  const start = Math.min(...timings.map((t) => t.startedAt));
+  const end = Math.max(...timings.map((t) => t.endedAt));
+  const events = timings
+    .flatMap((t) => [
+      { time: t.startedAt, delta: 1 },
+      { time: t.endedAt, delta: -1 },
+    ])
+    .sort((a, b) => a.time - b.time);
+  let depth = 0;
+  let maxConcurrent = 0;
+  for (const event of events) {
+    depth += event.delta;
+    maxConcurrent = Math.max(maxConcurrent, depth);
+  }
+  return {
+    maxConcurrent,
+    wall: end - start,
+    serial: timings.reduce((sum, t) => sum + (t.endedAt - t.startedAt), 0),
+  };
+}
+
+/**
+ * Print how tool executions overlapped, relative to the first one:
+ *
+ * ```text
+ * tool concurrency (agent.run)
+ * get_weather(Paris)     +0ms →  +502ms  (500ms)
+ * search_flights(Tokyo)  +2ms →  +803ms  (800ms)
+ * max concurrent tools: 2, wall 803ms vs 1300ms serial
+ * ```
+ */
+function reportToolConcurrency(label: string, timings: ToolTiming[]): void {
+  if (timings.length === 0) return;
+  const base = Math.min(...timings.map((t) => t.startedAt));
+  const summary = summarizeConcurrency(timings);
+  console.log(`\n${label}`);
+  for (const t of timings) {
+    const latency = t.endedAt - t.startedAt;
+    console.log(
+      `${t.label.padEnd(30)} +${String(t.startedAt - base).padStart(5)}ms → +${String(
+        t.endedAt - base,
+      ).padStart(6)}ms  (${latency}ms)`,
+    );
+  }
+  console.log(
+    `max concurrent tools: ${summary.maxConcurrent}, wall ${summary.wall}ms vs ${summary.serial}ms serial`,
+  );
 }
 
 async function waitFor(
@@ -283,6 +344,189 @@ describe("DeepSeek e2e (requires DEEPSEEK_API_KEY)", () => {
     const [turn] = await persistence.listTurns(conversation.id);
     const coordinatorGen = generations.find((g) => g.agentName === "Jarvis")!;
     reportTimeline("coordination latency", turn!, coordinatorGen);
+  });
+
+  e2e("runs a multi-tool agent with concurrent tool calls", async () => {
+    const timings: ToolTiming[] = [];
+    const timed =
+      (name: string, latency: number) =>
+      async (args: Record<string, string>): Promise<string> => {
+        const startedAt = Date.now();
+        await Bun.sleep(latency);
+        const value = Object.values(args)[0] ?? "?";
+        timings.push({ label: `${name}(${value})`, startedAt, endedAt: Date.now() });
+        return name === "get_weather"
+          ? `sunny, 24°C in ${value}`
+          : `One non-stop flight to ${value} at 09:40`;
+      };
+
+    const getWeather = new Tool({
+      name: "get_weather",
+      description: "Get the current weather for a city.",
+      execute: timed("get_weather", 500),
+    });
+    const searchFlights = new Tool({
+      name: "search_flights",
+      description: "Find available flights to a destination.",
+      execute: timed("search_flights", 800),
+    });
+
+    const agent = new Agent({
+      name: "Travel Assistant",
+      context:
+        "You are a travel assistant. Always call the tools to answer. " +
+        "When a request needs several lookups, call every needed tool at " +
+        "the same time in a single response.",
+      llm: makeLlm(),
+      tools: [getWeather, searchFlights],
+    });
+
+    const result = await agent.run({
+      prompt:
+        "What is the weather in Paris, and are there flights to Tokyo " +
+        "tomorrow? Call both tools now, in the same request.",
+      maxTokens: 300,
+    });
+
+    // The real model called both tools.
+    expect(result.toolCalls.some((c) => c.name === "get_weather")).toBe(true);
+    expect(result.toolCalls.some((c) => c.name === "search_flights")).toBe(true);
+
+    // The two executions overlapped: the batch ran concurrently, so the
+    // wall time is well under the 500 + 800ms serial total.
+    const summary = summarizeConcurrency(timings);
+    reportToolConcurrency("agent.run() tool concurrency", timings);
+    expect(summary.maxConcurrent).toBeGreaterThan(1);
+    expect(summary.wall).toBeLessThan(summary.serial - 200);
+
+    expect(result.text).toMatch(/paris/i);
+    expect(result.text).toMatch(/tokyo/i);
+  });
+
+  e2e("runs a conversation with multiple tools resolved concurrently by the app", async () => {
+    const stt = new FakeSTT();
+    const tts = new FakeTTS();
+    const persistence = new MemoryPersistence();
+    const api = new Conversations({ persistence, stt, tts });
+
+    const timings: ToolTiming[] = [];
+    const requested: string[] = [];
+
+    const getWeather = new Tool({
+      name: "get_weather",
+      description: "Get the current weather for a city.",
+      execute: async ({ city }: { city: string }) => {
+        const startedAt = Date.now();
+        await Bun.sleep(600);
+        timings.push({ label: `get_weather(${city})`, startedAt, endedAt: Date.now() });
+        return `sunny, 24°C in ${city}`;
+      },
+    });
+    const getLocalTime = new Tool({
+      name: "get_local_time",
+      description: "Get the current local time for a city.",
+      execute: async ({ city }: { city: string }) => {
+        const startedAt = Date.now();
+        await Bun.sleep(600);
+        timings.push({ label: `get_local_time(${city})`, startedAt, endedAt: Date.now() });
+        return `2:30 PM in ${city}`;
+      },
+    });
+
+    const conversation = await api.create({
+      agents: [
+        new Agent({
+          name: "Jarvis",
+          context:
+            "You are a concise travel assistant. Always call the tools. " +
+            "When a request needs several lookups, request them together " +
+            "in one response.",
+          llm: makeLlm(),
+          tools: [getWeather, getLocalTime],
+        }),
+      ],
+    });
+    await conversation.start();
+    await conversation.participate({ userId: "alice", aliases: ["al"] });
+
+    // The application executes every requested tool (with real latency) and
+    // resolves it — independent calls run concurrently.
+    conversation.on("tool-call", ({ call }) => {
+      requested.push(call.name);
+      void (async () => {
+        const tool = call.name === "get_weather" ? getWeather : getLocalTime;
+        try {
+          const result = await tool.execute(call.arguments as never);
+          conversation.resolveToolCall({ id: call.id, result });
+        } catch (error) {
+          conversation.resolveToolCall({
+            id: call.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+        }
+      })();
+    });
+
+    conversation.listen({ userId: "alice", audio: new Uint8Array([1]) });
+    stt.sessions[0]!.emitFinal(
+      "What's the weather in Paris and what time is it in Tokyo? Call both tools now.",
+    );
+
+    await waitFor(async () => {
+      const generations = await persistence.listGenerations(conversation.id);
+      return generations.some((g) => g.status === "completed");
+    });
+
+    const transcript = await api.transcript(conversation.id);
+    expect(transcript.at(-1)?.speakerKind).toBe("agent");
+    expect(transcript.at(-1)?.text.length).toBeGreaterThan(0);
+    expect(transcript.at(-1)?.text).toMatch(/paris/i);
+    expect(transcript.at(-1)?.text).toMatch(/tokyo/i);
+
+    // Both tools were requested by the model and executed by the application,
+    // overlapping in time (the batch ran concurrently).
+    expect(requested.filter((n) => n === "get_weather").length).toBeGreaterThan(0);
+    expect(requested.filter((n) => n === "get_local_time").length).toBeGreaterThan(0);
+    const summary = summarizeConcurrency(timings);
+    reportToolConcurrency("conversation tool concurrency", timings);
+    expect(summary.maxConcurrent).toBeGreaterThan(1);
+    expect(summary.wall).toBeLessThan(summary.serial - 200);
+
+    const [turn] = await persistence.listTurns(conversation.id);
+    const generation = (await persistence.listGenerations(conversation.id)).find(
+      (g) => g.kind !== "sub",
+    )!;
+    reportTimeline("conversation tool pipeline latency", turn!, generation);
+  });
+
+  e2e("surfaces a failing tool as an error result and completes gracefully", async () => {
+    const sendEmail = new Tool({
+      name: "send_email",
+      description: "Send an email to a recipient.",
+      execute: async () => {
+        throw new Error("SMTP outage");
+      },
+    });
+
+    const agent = new Agent({
+      name: "Jarvis",
+      context:
+        "You are a helpful assistant. If a tool fails, briefly tell the user and stop.",
+      llm: makeLlm(),
+      tools: [sendEmail],
+    });
+
+    const result = await agent.run({
+      prompt: "Send an email to alice@example.com with the subject 'hello'.",
+      maxTokens: 200,
+    });
+
+    // The failure was captured as a tool error result and the model still
+    // produced a graceful final answer.
+    expect(result.toolCalls.length).toBeGreaterThan(0);
+    expect(result.toolCalls[0]!.name).toBe("send_email");
+    expect(result.toolCalls[0]!.result).toEqual({ error: "SMTP outage" });
+    expect(result.text.length).toBeGreaterThan(0);
   });
 
   e2e("interrupts a streaming generation and starts fresh on the next turn", async () => {

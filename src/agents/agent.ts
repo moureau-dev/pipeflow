@@ -136,13 +136,17 @@ export class Agent {
       }
 
       messages.push({ role: "assistant", content: text, toolCalls });
-      for (const call of toolCalls) {
-        const executedCall = await this.executeToolCall(call);
+      // Execute the batch concurrently: the model issued these calls
+      // together, so they are independent. Results keep call order.
+      const executedBatch = await Promise.all(
+        toolCalls.map((call) => this.executeToolCall(call)),
+      );
+      for (const executedCall of executedBatch) {
         executed.push(executedCall);
         messages.push({
           role: "tool",
-          toolCallId: call.id,
-          name: call.name,
+          toolCallId: executedCall.id,
+          name: executedCall.name,
           content: JSON.stringify(executedCall.result),
         });
       }

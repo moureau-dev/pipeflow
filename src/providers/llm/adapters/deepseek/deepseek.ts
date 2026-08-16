@@ -32,7 +32,7 @@ export class DeepSeekLLM implements LLM {
   private readonly model: string;
   private readonly baseUrl: string;
   private readonly fetchImpl: FetchLike;
-  private abort: AbortController | null = null;
+  private readonly streams = new Set<AbortController>();
 
   constructor(options: DeepSeekOptions) {
     if (!options.apiKey) {
@@ -44,15 +44,16 @@ export class DeepSeekLLM implements LLM {
     this.fetchImpl = options.fetch ?? fetch;
   }
 
+  /** Cancel every in-flight stream (parallel sub-generations included). */
   stop(): void {
-    this.abort?.abort();
+    for (const controller of this.streams) controller.abort();
   }
 
   async *stream(request: LLMRequest): AsyncGenerator<LLMEvent> {
-    // Only one generation at a time per adapter instance.
-    this.abort?.abort();
+    // Multiple generations can stream concurrently (e.g. delegated
+    // sub-agents); each gets its own controller, and stop() aborts them all.
     const controller = new AbortController();
-    this.abort = controller;
+    this.streams.add(controller);
 
     try {
       const response = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
@@ -63,8 +64,29 @@ export class DeepSeekLLM implements LLM {
         },
         body: JSON.stringify({
           model: this.model,
-          messages: request.messages,
-          tools: request.tools?.map((tool) => ({ type: "function", function: tool })),
+          // LLMMessage uses camelCase; the wire format is snake_case.
+          messages: request.messages.map((message) => {
+            const wire: Record<string, unknown> = {
+              role: message.role,
+              content: message.content,
+            };
+            if (message.name) wire.name = message.name;
+            if (message.toolCallId) wire.tool_call_id = message.toolCallId;
+            if (message.toolCalls) {
+              wire.tool_calls = message.toolCalls.map((call) => ({
+                id: call.id,
+                type: "function",
+                function: { name: call.name, arguments: call.arguments },
+              }));
+            }
+            return wire;
+          }),
+          ...(request.tools && request.tools.length > 0
+            ? { tools: request.tools.map((tool) => ({ type: "function", function: tool })) }
+            : {}),
+          // Reasoning models default to enabled thinking; disable it so the
+          // adapter behaves uniformly on deepseek-chat.
+          thinking: { type: "disabled" },
           stream: true,
           temperature: request.temperature,
           max_tokens: request.maxTokens,
@@ -120,9 +142,7 @@ export class DeepSeekLLM implements LLM {
 
       yield { type: "done" };
     } finally {
-      if (this.abort === controller) {
-        this.abort = null;
-      }
+      this.streams.delete(controller);
     }
   }
 }

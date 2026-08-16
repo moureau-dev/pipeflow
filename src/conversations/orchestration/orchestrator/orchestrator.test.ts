@@ -397,6 +397,23 @@ describe("Orchestrator", () => {
     ]);
   });
 
+  test("records latency timing on generations", async () => {
+    const harness = await setup({ script: respond("Hello there!") });
+
+    await speak(harness, "alice", "Hi.");
+
+    const [generation] = await harness.persistence.listGenerations("conv-1");
+    const timing = generation!.timing!;
+    expect(timing.startedAt).toBeDefined();
+    expect(timing.firstTokenAt).toBeDefined();
+    expect(timing.firstAudioAt).toBeDefined();
+    expect(timing.completedAt).toBeDefined();
+    // The latency chain is ordered: start → first token → first audio → done.
+    expect(timing.startedAt).toBeLessThanOrEqual(timing.firstTokenAt!);
+    expect(timing.firstTokenAt!).toBeLessThanOrEqual(timing.firstAudioAt!);
+    expect(timing.firstAudioAt!).toBeLessThanOrEqual(timing.completedAt!);
+  });
+
   test("emits partial transcripts for live captions", async () => {
     const harness = await setup({ script: respond("Ok!") });
     const partials: { userId: UserId; text: string }[] = [];
@@ -907,6 +924,25 @@ describe("Orchestrator", () => {
       expect(harness.llms.get("Travel Agent")!.requests).toHaveLength(1);
       expect(harness.llms.get("Calendar Agent")!.requests).toHaveLength(1);
       expect(harness.llm.requests[1]!.messages.at(-1)?.role).toBe("tool");
+    });
+
+    test("records timing on text-only sub-generations", async () => {
+      const harness = await setupRoster({
+        coordinatorScript: understandThatDelegates([
+          { agent: "Travel Agent", prompt: "Find flights." },
+        ]),
+        scripts: { "Travel Agent": respond("Flight at 3pm.") },
+      });
+
+      await speak(harness, "alice", "Book a flight.");
+
+      const sub = (await harness.persistence.listGenerations("conv-1")).find(
+        (g) => g.kind === "sub",
+      )!;
+      expect(sub.timing?.firstTokenAt).toBeDefined();
+      expect(sub.timing?.completedAt).toBeDefined();
+      // Sub-agents are text-only: no audio is ever delivered for them.
+      expect(sub.timing?.firstAudioAt).toBeUndefined();
     });
 
     test("dispatched specialists keep their own tools running in the app backend", async () => {

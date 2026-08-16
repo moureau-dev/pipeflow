@@ -2,6 +2,7 @@ import { Database } from "bun:sqlite";
 import type {
   ConversationId,
   Generation,
+  GenerationTiming,
   Participant,
   Turn,
   UserId,
@@ -63,6 +64,7 @@ interface GenerationRow {
   ended_at: number | null;
   kind: string | null;
   parent_generation_id: string | null;
+  timing: string | null;
 }
 
 /**
@@ -122,7 +124,8 @@ export class SQLitePersistence implements Persistence {
         started_at          INTEGER NOT NULL,
         ended_at            INTEGER,
         kind                TEXT,
-        parent_generation_id TEXT
+        parent_generation_id TEXT,
+        timing              TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_participants_conversation ON participants (conversation_id);
@@ -144,6 +147,9 @@ export class SQLitePersistence implements Persistence {
     }
     if (!generationColumns.has("parent_generation_id")) {
       this.db.exec(`ALTER TABLE generations ADD COLUMN parent_generation_id TEXT`);
+    }
+    if (!generationColumns.has("timing")) {
+      this.db.exec(`ALTER TABLE generations ADD COLUMN timing TEXT`);
     }
   }
 
@@ -317,8 +323,8 @@ export class SQLitePersistence implements Persistence {
     this.db
       .query(
         `INSERT OR REPLACE INTO generations
-           (id, conversation_id, agent_name, text, status, started_at, ended_at, kind, parent_generation_id)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (id, conversation_id, agent_name, text, status, started_at, ended_at, kind, parent_generation_id, timing)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         generation.id,
@@ -330,6 +336,7 @@ export class SQLitePersistence implements Persistence {
         generation.endedAt ?? null,
         generation.kind ?? null,
         generation.parentGenerationId ?? null,
+        generation.timing ? JSON.stringify(generation.timing) : null,
       );
   }
 
@@ -349,6 +356,7 @@ export class SQLitePersistence implements Persistence {
       endedAt: row.ended_at ?? undefined,
       kind: row.kind === "sub" ? "sub" : undefined,
       parentGenerationId: row.parent_generation_id ?? undefined,
+      timing: row.timing ? (JSON.parse(row.timing) as GenerationTiming) : undefined,
     }));
   }
 }

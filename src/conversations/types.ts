@@ -42,6 +42,20 @@ export interface Turn {
 
 export type GenerationStatus = "streaming" | "completed" | "cancelled";
 
+/**
+ * Latency instrumentation for a generation: when it started, when the first
+ * LLM token and the first synthesized audio chunk arrived, and when it
+ * finished. Times are epoch milliseconds; all are optional except `startedAt`.
+ */
+export interface GenerationTiming {
+  startedAt: number;
+  /** First LLM delta of this generation (first-token latency). */
+  firstTokenAt?: number;
+  /** First TTS audio chunk delivered to the application (speech latency). */
+  firstAudioAt?: number;
+  completedAt?: number;
+}
+
 export interface Generation {
   id: string;
   conversationId: ConversationId;
@@ -57,6 +71,8 @@ export interface Generation {
   kind?: "sub";
   /** For sub-generations: the id of the coordinator generation that dispatched them. */
   parentGenerationId?: string;
+  /** Latency instrumentation, recorded as the generation streams. */
+  timing?: GenerationTiming;
 }
 
 // ---------------------------------------------------------------------------

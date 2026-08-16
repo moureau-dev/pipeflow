@@ -9,6 +9,7 @@ import type {
   ConversationState,
   ConversationStatus,
   Generation,
+  GenerationTiming,
   Participant,
   ParticipantInput,
   Turn,
@@ -21,6 +22,11 @@ import {
   type TranscriptEntryInput,
 } from "../transcription/transcription";
 import type { ToolCall, ToolCallResult } from "../types";
+
+/** Ensure a generation carries a timing record, initialized from its start. */
+function initTiming(generation: Generation): GenerationTiming {
+  return (generation.timing ??= { startedAt: generation.startedAt });
+}
 
 export interface ConversationOptions {
   id: ConversationId;
@@ -250,6 +256,17 @@ export class Conversation {
 
   /** Push a chunk of generated audio to the application. */
   pushAudio(audio: AudioChunk): void {
+    // Record when the first synthesized chunk reached the application for the
+    // in-flight generation (speech-to-delivery latency).
+    const generation = this.state.currentGeneration;
+    if (generation && generation.status === "streaming") {
+      const timing = initTiming(generation);
+      if (timing.firstAudioAt === undefined) {
+        timing.firstAudioAt = Date.now();
+        void this.persistence?.appendGeneration(this.id, generation).catch(() => {});
+        this.emitState();
+      }
+    }
     this.emit("audio", { conversationId: this.id, audio });
   }
 
@@ -275,9 +292,26 @@ export class Conversation {
 
   /** Push an agent generation into the conversation. */
   async pushGeneration(generation: Generation): Promise<void> {
+    initTiming(generation);
     this.state.currentGeneration = generation;
     this.emit("generation", { conversationId: this.id, generation });
     await this.persistence?.appendGeneration(this.id, generation);
+    this.emitState();
+  }
+
+  /**
+   * Record the first LLM token of a generation. Without an id this targets
+   * the current generation; with one, a dispatched sub-generation.
+   */
+  noteFirstToken(generationId?: string): void {
+    const generation = generationId
+      ? this.subGenerations.get(generationId)
+      : this.state.currentGeneration;
+    if (!generation || generation.status !== "streaming") return;
+    const timing = initTiming(generation);
+    if (timing.firstTokenAt !== undefined) return;
+    timing.firstTokenAt = Date.now();
+    void this.persistence?.appendGeneration(this.id, generation).catch(() => {});
     this.emitState();
   }
 
@@ -318,6 +352,7 @@ export class Conversation {
       if (text !== undefined) generation.text = text;
       generation.status = "completed";
       generation.endedAt = Date.now();
+      initTiming(generation).completedAt = Date.now();
       await this.persistence?.appendGeneration(this.id, generation);
       this.emitState();
     }
@@ -334,6 +369,7 @@ export class Conversation {
    * own in-flight generation.
    */
   async pushSubGeneration(generation: Generation): Promise<void> {
+    initTiming(generation);
     this.subGenerations.set(generation.id, generation);
     this.emit("generation", { conversationId: this.id, generation });
     await this.persistence?.appendGeneration(this.id, generation);
@@ -347,6 +383,7 @@ export class Conversation {
     if (text !== undefined) generation.text = text;
     generation.status = "completed";
     generation.endedAt = Date.now();
+    initTiming(generation).completedAt = Date.now();
     await this.persistence?.appendGeneration(this.id, generation);
     this.emitState();
   }

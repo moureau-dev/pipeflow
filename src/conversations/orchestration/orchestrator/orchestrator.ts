@@ -1007,6 +1007,7 @@ export class Orchestrator {
           if (this.epoch !== epoch) return this.cancelSubGeneration(id, agent.name);
           switch (event.type) {
             case "delta":
+              if (text.length === 0) this.conversation.noteFirstToken(id);
               text += event.content;
               break;
             case "tool_call":
@@ -1111,6 +1112,9 @@ export class Orchestrator {
   // -------------------------------------------------------------------------
 
   private feedDelta(delta: string): void {
+    // First-token latency for the in-flight generation (agent or
+    // coordination — both stream narration through here).
+    this.conversation.noteFirstToken();
     this.speechBuffer += delta;
     // Flush every complete sentence so multi-sentence deltas (and deltas
     // that span several sentences) are spoken as separate TTS requests.

@@ -5,6 +5,7 @@ export type {
   ConversationStatus,
   Generation,
   GenerationStatus,
+  GenerationTiming,
   Participant,
   ParticipantInput,
   ToolCall,

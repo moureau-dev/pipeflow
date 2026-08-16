@@ -6,6 +6,7 @@ import { MemoryPersistence } from "../persistence/adapters/memory/memory";
 import { DeepSeekLLM } from "../providers/llm/adapters/deepseek/deepseek";
 import type { STT, STTOptions, STTSession } from "../providers/stt/types";
 import type { TTS, TTSRequest } from "../providers/tts/types";
+import type { Generation, GenerationTiming, Turn } from "../conversations/types";
 
 // End-to-end tests against the real DeepSeek API. They need a
 // DEEPSEEK_API_KEY in the environment (`.env` is loaded automatically) and
@@ -66,12 +67,51 @@ class FakeSTTSession implements STTSession {
 }
 
 class FakeTTS implements TTS {
-  readonly requests: TTSRequest[] = [];
+  readonly requests: Array<TTSRequest & { firstChunkAt?: number }> = [];
   async *stream(request: TTSRequest): AsyncGenerator<Uint8Array> {
-    this.requests.push(request);
+    const entry = { ...request, firstChunkAt: Date.now() };
+    this.requests.push(entry);
     yield new TextEncoder().encode(request.text);
   }
   stop(): void {}
+}
+
+/**
+ * Print the latency timeline of a generation relative to its turn boundary.
+ *
+ * ```text
+ * Turn boundary       0ms
+ * LLM first token   +280ms
+ * TTS first chunk   +410ms
+ * Audio delivered   +430ms
+ * LLM completed    +1,240ms
+ * ```
+ */
+function reportTimeline(
+  label: string,
+  turn: Turn,
+  generation: Generation,
+  ttsRequests: Array<{ firstChunkAt?: number }>,
+): void {
+  const base = turn.startedAt;
+  const timing: GenerationTiming = generation.timing ?? {
+    startedAt: generation.startedAt,
+  };
+  const row = (name: string, at: number | undefined) => {
+    if (at === undefined) {
+      console.log(`${name.padEnd(18)} ${("—").padStart(9)}`);
+      return;
+    }
+    const delta = at - base;
+    const rendered = delta === 0 ? "0ms" : `+${delta}ms`;
+    console.log(`${name.padEnd(18)} ${rendered.padStart(9)}`);
+  };
+  console.log(`\n${label}`);
+  row("Turn boundary", turn.startedAt);
+  row("LLM first token", timing.firstTokenAt);
+  row("TTS first chunk", ttsRequests[0]?.firstChunkAt);
+  row("Audio delivered", timing.firstAudioAt);
+  row("LLM completed", timing.completedAt);
 }
 
 async function waitFor(
@@ -163,6 +203,19 @@ describe("DeepSeek e2e (requires DEEPSEEK_API_KEY)", () => {
     expect(transcript.at(-1)?.speakerKind).toBe("agent");
     expect(transcript.at(-1)?.text.length).toBeGreaterThan(0);
     expect(tts.requests.length).toBeGreaterThan(0);
+
+    // The generation carries its latency instrumentation.
+    const [turn] = await persistence.listTurns(conversation.id);
+    const generation = (await persistence.listGenerations(conversation.id)).find(
+      (g) => g.kind !== "sub",
+    )!;
+    const timing: GenerationTiming = generation.timing ?? {
+      startedAt: generation.startedAt,
+    };
+    expect(timing.firstTokenAt).toBeDefined();
+    expect(timing.firstAudioAt).toBeDefined();
+    expect(timing.completedAt).toBeDefined();
+    reportTimeline("conversation pipeline latency", turn!, generation, tts.requests);
   });
 
   e2e("coordinates a multi-agent delegation with the real LLM", async () => {
@@ -220,5 +273,11 @@ describe("DeepSeek e2e (requires DEEPSEEK_API_KEY)", () => {
     expect(subs.length).toBeGreaterThan(0);
     expect(subs.every((g) => g.status === "completed")).toBe(true);
     expect(subs.every((g) => g.agentName !== "Jarvis")).toBe(true);
+
+    // Report the coordinator's latency: first token is its narration, the
+    // completed marker lands once the specialists' results are merged.
+    const [turn] = await persistence.listTurns(conversation.id);
+    const coordinatorGen = generations.find((g) => g.agentName === "Jarvis")!;
+    reportTimeline("coordination latency", turn!, coordinatorGen, tts.requests);
   });
 });

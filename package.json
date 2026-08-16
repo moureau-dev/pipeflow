@@ -82,6 +82,7 @@
     "build": "bun scripts/build.mjs",
     "prepublishOnly": "bun run build",
     "test": "bun test",
+    "test:e2e": "bun test src/e2e",
     "typecheck": "bunx tsc --noEmit"
   },
   "devDependencies": {

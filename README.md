@@ -907,6 +907,13 @@ Run tests:
 bun test
 ```
 
+End-to-end tests hit the real DeepSeek API and are skipped when no key is
+available. Add a `DEEPSEEK_API_KEY` to `.env` (loaded automatically) and run:
+
+```bash
+bun run test:e2e
+```
+
 Build and type-check:
 
 ```bash

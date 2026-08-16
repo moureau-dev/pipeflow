@@ -313,27 +313,58 @@ describe("DeepSeekLLM", () => {
     expect(() => llm.stop()).not.toThrow();
   });
 
-  test("a second stream cancels the first", async () => {
+  test("streams run concurrently and stop() aborts all of them", async () => {
     const encoder = new TextEncoder();
-    // Every fetch call gets a fresh never-ending stream.
-    const hangingStream = () =>
-      new ReadableStream<Uint8Array>({
-        start(controller) {
-          controller.enqueue(encoder.encode(sseFrame(deltaChunk("stale"))));
+    // Every fetch call gets a fresh stream with a single frame, then never
+    // closes. The mock respects the abort signal like a real fetch: abort
+    // errors the body, which rejects a pending read() instead of hanging.
+    const hangingStream = () => {
+      let controller!: ReadableStreamDefaultController<Uint8Array>;
+      const stream = new ReadableStream<Uint8Array>({
+        start(streamController) {
+          controller = streamController;
+          streamController.enqueue(encoder.encode(sseFrame(deltaChunk("stale"))));
         },
       });
+      return {
+        stream,
+        error: (reason: unknown) => controller.error(reason),
+      };
+    };
 
     const llm = new DeepSeekLLM({
       apiKey: "test-key",
-      fetch: async () => new Response(hangingStream(), { status: 200 }),
+      fetch: async (_url, init) => {
+        const { stream, error } = hangingStream();
+        init?.signal?.addEventListener("abort", () => {
+          error(new DOMException("The operation was aborted.", "AbortError"));
+        });
+        return new Response(stream, { status: 200 });
+      },
     });
 
+    // Parallel streams must not cancel each other (delegated sub-agents
+    // stream concurrently on a shared instance). The first stream is still
+    // alive after the second and third start: a pull stays pending instead
+    // of rejecting.
     const first = llm.stream(basicRequest);
     await first.next();
-
-    // Starting a new stream aborts the previous one.
     const second = llm.stream(basicRequest);
     await second.next();
-    await expect(first.next()).rejects.toThrow("aborted");
+    const third = llm.stream(basicRequest);
+    await third.next();
+
+    let firstAfterStop: Promise<"resolved" | "aborted"> | undefined;
+    const alive = await Promise.race([
+      (firstAfterStop = first.next().then(() => "resolved", () => "aborted")),
+      Bun.sleep(20).then(() => "still-streaming"),
+    ]);
+    expect(alive).toBe("still-streaming");
+
+    // stop() aborts every in-flight stream.
+    llm.stop();
+    expect(await firstAfterStop).toBe("aborted");
+    await expect(second.next()).rejects.toThrow("aborted");
+    await expect(third.next()).rejects.toThrow("aborted");
   });
 });

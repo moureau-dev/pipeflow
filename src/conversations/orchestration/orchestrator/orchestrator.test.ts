@@ -3,7 +3,7 @@ import { Agent } from "../../../agents/agent";
 import { Tool } from "../../../agents/tools/tools";
 import { Conversation } from "../../conversation/conversation";
 import { MemoryPersistence } from "../../../persistence/adapters/memory/memory";
-import { Orchestrator, pickAgent, formatTimeContext } from "./orchestrator";
+import { Orchestrator, pickAgent, formatTimeContext, formatParticipantContext } from "./orchestrator";
 import type { AudioChunk, ToolCall, UserId } from "../../types";
 import type {
   LLM,
@@ -246,6 +246,15 @@ function respond(text: string): LLMScript {
   };
 }
 
+test("formatParticipantContext stamps the speaker's identity", () => {
+  expect(
+    formatParticipantContext({ userId: "12345", aliases: ["alice", "al"], joinedAt: 0 }),
+  ).toBe("The current user is alice with user id 12345 (aliases: alice, al).");
+  expect(formatParticipantContext({ userId: "67890", aliases: [], joinedAt: 0 })).toBe(
+    "The current user is 67890 with user id 67890.",
+  );
+});
+
 // ---------------------------------------------------------------------------
 // Multi-agent roster harness (coordinator + named specialists)
 // ---------------------------------------------------------------------------
@@ -430,10 +439,17 @@ describe("Orchestrator", () => {
       ["al", "Hello there."],
     ]);
 
-    // LLM saw the system context and the user turn.
+    // LLM saw the system context and the user turn, plus the speaker/time
+    // stamp so "I"/"me" resolves to an identity.
     expect(harness.llm.requests[0]!.messages).toEqual([
       { role: "system", name: "Jarvis", content: "Be concise." },
       { role: "user", content: "al: Hello there." },
+      {
+        role: "user",
+        content: expect.stringMatching(
+          /^Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.\nThe current user is al with user id alice \(aliases: al\)\.$/,
+        ),
+      },
     ]);
 
     // Deltas were buffered into sentences and synthesized in order.
@@ -752,12 +768,18 @@ describe("Orchestrator", () => {
     await speak(harness, "alice", "In London.");
 
     // The second request carries the whole exchange so the follow-up
-    // answer can reference it.
+    // answer can reference it, plus the current speaker stamp.
     expect(harness.llm.requests[1]!.messages).toEqual([
       { role: "system", name: "Jarvis", content: "Be concise." },
       { role: "user", content: "al: What is the weather?" },
       { role: "assistant", name: "Jarvis", content: "Which city?" },
       { role: "user", content: "al: In London." },
+      {
+        role: "user",
+        content: expect.stringMatching(
+          /^Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.\nThe current user is al with user id alice \(aliases: al\)\.$/,
+        ),
+      },
     ]);
     expect(harness.tts.requests.map((r) => r.text)).toEqual([
       "Which city?",
@@ -821,7 +843,8 @@ describe("Orchestrator", () => {
     expect(specialistLlm.requests).toHaveLength(1);
     expect(receptionistLlm.requests).toHaveLength(1);
     // The specialist gets its own system context plus the shared history,
-    // with the coordination's reply attributed by name.
+    // with the coordination's reply attributed by name, and the current
+    // speaker stamped so it knows who "I" is.
     expect(specialistLlm.requests[0]!.messages).toEqual([
       {
         role: "system",
@@ -835,6 +858,12 @@ describe("Orchestrator", () => {
         content: "How can I help?",
       },
       { role: "user", content: "al: Ask the technical specialist to fix it." },
+      {
+        role: "user",
+        content: expect.stringMatching(
+          /^Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.\nThe current user is al with user id alice \(aliases: al\)\.$/,
+        ),
+      },
     ]);
 
     // Each generation is attributed to the agent that spoke.
@@ -1658,6 +1687,12 @@ describe("Orchestrator", () => {
         { role: "user", content: "alice: Hello from before." },
         { role: "assistant", name: "Jarvis", content: "Summary answer." },
         { role: "user", content: "alice: Can you continue?" },
+        {
+          role: "user",
+          content: expect.stringMatching(
+            /^Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.\nThe current user is alice with user id alice\.$/,
+          ),
+        },
       ]);
     });
   });
@@ -1704,6 +1739,12 @@ describe("Orchestrator", () => {
       { role: "system", name: "Jarvis", content: "Be concise." },
       { role: "user", content: "alice: Hello from before." },
       { role: "user", content: "alice: Can you continue?" },
+      {
+        role: "user",
+        content: expect.stringMatching(
+          /^Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.\nThe current user is alice with user id alice\.$/,
+        ),
+      },
     ]);
   });
 

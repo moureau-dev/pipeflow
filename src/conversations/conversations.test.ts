@@ -268,6 +268,12 @@ describe("Conversations", () => {
     expect(specialistLlm.requests[0]!.messages).toEqual([
       { role: "system", name: "Technical Specialist", content: "You solve problems." },
       { role: "user", content: "al: Ask the technical specialist to fix it." },
+      {
+        role: "user",
+        content: expect.stringMatching(
+          /^Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.\nThe current user is al with user id alice \(aliases: al\)\.$/,
+        ),
+      },
     ]);
 
     const transcript = await api.transcript(conversation.id);
@@ -380,6 +386,12 @@ describe("Conversations", () => {
     expect(llm.requests[0]!.messages).toEqual([
       { role: "system", name: "Jarvis", content: "Be concise." },
       { role: "user", content: "al: Hello there." },
+      {
+        role: "user",
+        content: expect.stringMatching(
+          /^Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.\nThe current user is al with user id alice \(aliases: al\)\.$/,
+        ),
+      },
     ]);
     expect(tts.requests.map((request) => request.text)).toEqual(["Got it!"]);
 

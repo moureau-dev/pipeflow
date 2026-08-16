@@ -9,7 +9,7 @@ import type {
 } from "../../../providers/llm/types";
 import type { STT, STTSession } from "../../../providers/stt/types";
 import type { TTS } from "../../../providers/tts/types";
-import type { AudioChunk, Generation, ToolCallResult, Turn, UserId } from "../../types";
+import type { AudioChunk, Generation, Participant, ToolCallResult, Turn, UserId } from "../../types";
 import {
   Coordination,
   CoordinationBudgetExceeded,
@@ -100,6 +100,20 @@ export function formatTimeContext(date = new Date()): string {
   const hours = String(date.getHours()).padStart(2, "0");
   const minutes = String(date.getMinutes()).padStart(2, "0");
   return `Now it is ${day} ${month} ${year}, ${hours}:${minutes}.`;
+}
+
+/**
+ * An identity stamp for the turn's speaker, so the model can reason about
+ * "me"/"I" (e.g. "enhance the message I just sent") instead of only seeing
+ * the display alias in the history.
+ */
+export function formatParticipantContext(participant: Participant): string {
+  const displayName = participant.aliases[0] ?? participant.userId;
+  const aliases =
+    participant.aliases.length > 0
+      ? ` (aliases: ${participant.aliases.join(", ")})`
+      : "";
+  return `The current user is ${displayName} with user id ${participant.userId}${aliases}.`;
 }
 
 /**
@@ -577,6 +591,16 @@ export class Orchestrator {
       messages.push({ role: "system", name: agent.name, content: agent.context });
     }
     messages.push(...this.history);
+
+    // Stamp the turn's speaker (so "I"/"me" resolves to an identity) and the
+    // current time — the same temporal context delegated agents receive.
+    const participant = this.conversation.state.participants.get(turn.participantId);
+    if (participant) {
+      messages.push({
+        role: "user",
+        content: `${formatTimeContext()}\n${formatParticipantContext(participant)}`,
+      });
+    }
 
     let text = "";
 

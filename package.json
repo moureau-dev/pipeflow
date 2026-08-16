@@ -1,5 +1,5 @@
 {
-  "name": "@moureau-dev/pipeflow",
+  "name": "@moureau/pipeflow",
   "version": "0.0.1",
   "type": "module",
   "sideEffects": false,

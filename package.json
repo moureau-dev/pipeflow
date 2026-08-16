@@ -63,6 +63,18 @@
       "import": "./dist/esm/transport/*/index.js",
       "require": "./dist/cjs/transport/*/index.js",
       "default": "./dist/esm/transport/*/index.js"
+    },
+    "./conversations": {
+      "types": "./dist/types/conversations/index.d.ts",
+      "import": "./dist/esm/conversations/index.js",
+      "require": "./dist/cjs/conversations/index.js",
+      "default": "./dist/esm/conversations/index.js"
+    },
+    "./conversations/*": {
+      "types": "./dist/types/conversations/*/index.d.ts",
+      "import": "./dist/esm/conversations/*/index.js",
+      "require": "./dist/cjs/conversations/*/index.js",
+      "default": "./dist/esm/conversations/*/index.js"
     }
   },
   "files": ["dist"],

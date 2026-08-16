@@ -33,7 +33,11 @@ export class Pipeflow {
     this.stt = options.stt;
     this.tts = options.tts;
     const persistence = options.persistence ?? new MemoryPersistence();
-    this.conversations = new Conversations(persistence);
+    this.conversations = new Conversations({
+      persistence,
+      stt: options.stt,
+      tts: options.tts,
+    });
   }
 
   /**
@@ -62,7 +66,6 @@ export type { ToolOptions } from "./agents/tools/tools";
 export {
   Conversation,
   Conversations,
-  Orchestrator,
   Transcription,
   TranscriptEntry,
 } from "./conversations/index";
@@ -76,7 +79,6 @@ export type {
   CreateConversationOptions,
   Generation,
   GenerationStatus,
-  OrchestratorOptions,
   Participant,
   ParticipantInput,
   ToolCall,
@@ -87,6 +89,10 @@ export type {
   TurnId,
   UserId,
 } from "./conversations/index";
+
+// Realtime machinery (Orchestrator and friends) lives behind the
+// `@moureau/pipeflow/conversations` subpath — it is implementation detail
+// that `Conversation.start()` attaches automatically.
 
 // ---------------------------------------------------------------------------
 // Configuration interfaces.

@@ -1,5 +1,8 @@
 import type { Agent } from "../../agents/agent";
 import type { Persistence } from "../../persistence/persistence";
+import { Orchestrator } from "../orchestration/orchestrator/orchestrator";
+import type { STT } from "../../providers/stt/types";
+import type { TTS } from "../../providers/tts/types";
 import type {
   AudioChunk,
   ConversationId,
@@ -23,6 +26,12 @@ export interface ConversationOptions {
   id: ConversationId;
   agents?: Agent[];
   persistence?: Persistence;
+  /**
+   * STT provider used to attach realtime processing automatically on
+   * `start()`.
+   */
+  stt?: STT;
+  tts?: TTS;
 }
 
 export interface ConversationEvents {
@@ -57,9 +66,10 @@ export interface ConversationEvents {
  *
  * A `Conversation` is a runtime handle to a persistent conversation:
  * lifecycle (`start`/`stop`), participants, audio intake (`listen`), and
- * events. The orchestrator (added later) subscribes to `audio-in` and
- * pushes generated audio, turns, transcripts, and tool calls back through
- * the `push*`/`requestToolCall` methods.
+ * events. When an STT provider is configured, `start()` automatically
+ * attaches the orchestrator, which runs the STT/LLM/TTS pipeline and pushes
+ * generated audio, turns, transcripts, and tool calls back through
+ * conversation events.
  */
 export class Conversation {
   readonly id: ConversationId;
@@ -67,6 +77,8 @@ export class Conversation {
   readonly transcription: Transcription;
   readonly state: ConversationState;
   private readonly persistence: Persistence | undefined;
+  private readonly stt: STT | undefined;
+  private readonly tts: TTS | undefined;
   private readonly listeners = new Map<
     keyof ConversationEvents,
     Set<(payload: never) => void>
@@ -78,6 +90,8 @@ export class Conversation {
     this.id = options.id;
     this.agents = options.agents ?? [];
     this.persistence = options.persistence;
+    this.stt = options.stt;
+    this.tts = options.tts;
     this.transcription = new Transcription(this.id);
     this.state = createConversationState();
   }
@@ -90,14 +104,25 @@ export class Conversation {
     return [...this.state.participants.values()];
   }
 
-  start(): void {
+  /**
+   * Move the conversation into the started state. When an STT provider is
+   * configured, this also attaches the orchestrator that runs the realtime
+   * pipeline.
+   */
+  async start(): Promise<void> {
     if (this.state.status === "stopped") {
       throw new Error(`Conversation "${this.id}" has already been stopped`);
     }
     if (this.state.status === "started") return;
+
+    // Validate the realtime configuration before mutating any state.
+    const orchestrator = this.buildRealtime();
+
     this.state.status = "started";
     this.emit("start", { conversationId: this.id });
     this.emitState();
+
+    await orchestrator?.start();
   }
 
   async stop(): Promise<void> {
@@ -303,6 +328,21 @@ export class Conversation {
     }
     this.state.currentGeneration = null;
     return generation ?? null;
+  }
+
+  private buildRealtime(): Orchestrator | null {
+    if (!this.stt) return null;
+    const agent = this.agents[0];
+    const common = {
+      conversation: this,
+      stt: this.stt,
+      persistence: this.persistence,
+    };
+    // With an agent the orchestrator runs the full voice loop; without one it
+    // runs in transcription-only mode.
+    return agent
+      ? new Orchestrator({ ...common, agent, tts: this.tts })
+      : new Orchestrator(common);
   }
 
   private emitState(): void {

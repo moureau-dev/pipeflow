@@ -79,7 +79,7 @@ source — see [Development](#development).
 Create an agent:
 
 ```ts
-import { Pipeflow, Orchestrator } from "@moureau/pipeflow";
+import { Pipeflow } from "@moureau/pipeflow";
 import { DeepSeekLLM, DeepgramSTT, KokoroTTS } from "@moureau/pipeflow/providers";
 
 // Providers are configured explicitly with their own credentials —
@@ -111,28 +111,15 @@ const conversation = await pipeflow.conversations.create({
 });
 ```
 
-Attach the orchestrator — it runs the realtime pipeline (STT → turns → LLM → TTS) for the conversation:
+Starting a conversation starts its realtime machinery: `start()` attaches the
+orchestrator, which runs the STT → turns → LLM → TTS pipeline for the
+conversation.
 
 ```ts
-const orchestrator = new Orchestrator({
-  conversation,
-  agent: jarvis,
-  stt,
-  tts,
-});
-
-await orchestrator.start();
+await conversation.start();
 ```
 
-Start the conversation and add a participant:
-
-```ts
-conversation.start();
-
-await conversation.participate({
-  userId: "alice",
-});
-```
+Add a participant:
 
 Feed it audio as it arrives:
 
@@ -203,7 +190,7 @@ listen()       // sends audio
 stop()         // finalizes the realtime session
 ```
 
-Realtime processing itself is the orchestrator's job: once attached, it
+Realtime processing is attached automatically by `start()`: the orchestrator
 subscribes to `audio-in` events, runs the STT/LLM/TTS pipeline, and pushes
 generated audio, turns, transcripts, and tool calls back through conversation
 events.
@@ -488,16 +475,9 @@ This makes Pipeflow useful as a realtime transcription primitive.
 const conversation =
   await pipeflow.conversations.create();
 
-// Without an agent, the orchestrator runs in transcription-only mode:
-// audio in, turns and transcripts out.
-const orchestrator = new Orchestrator({
-  conversation,
-  stt,
-});
-
-await orchestrator.start();
-
-conversation.start();
+// Without an agent, `start()` attaches the orchestrator in
+// transcription-only mode: audio in, turns and transcripts out.
+await conversation.start();
 
 await conversation.participate([
   { userId: "alice" },

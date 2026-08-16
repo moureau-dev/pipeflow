@@ -90,7 +90,7 @@ describe("Pipeflow", () => {
     const conversation = await pipeflow.conversations.create({ agents: [agent] });
     expect(conversation).toBeInstanceOf(Conversation);
 
-    conversation.start();
+    await conversation.start();
     await conversation.participate([
       { userId: "alice" },
       { userId: "bob", aliases: ["robert"] },
@@ -153,13 +153,14 @@ describe("public exports", () => {
   });
 
   test("the main entry does not leak implementation detail", async () => {
-    const index = await import("./index");
+    const index = await import("./index.ts");
     expect("DeepSeekLLM" in index).toBe(false);
     expect("DeepgramSTT" in index).toBe(false);
     expect("KokoroTTS" in index).toBe(false);
     expect("SQLitePersistence" in index).toBe(false);
     expect("MemoryPersistence" in index).toBe(false);
     expect("MemoryTransport" in index).toBe(false);
+    expect("Orchestrator" in index).toBe(false);
     expect("complete" in index).toBe(false);
     expect("streamText" in index).toBe(false);
   });

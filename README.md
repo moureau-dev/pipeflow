@@ -67,11 +67,11 @@ An agent does not inherently own a conversation. A conversation does not require
 ## Installation
 
 ```bash
-bun add pipeflow
+bun add @moureau/pipeflow
 ```
 
 The package is not published to npm yet. Until then, install from the
-repository (`bun add pipeflow`) or build from
+repository (`bun add git@github.com:moureau-dev/pipeflow.git`) or build from
 source — see [Development](#development).
 
 ## Basic voice agent
@@ -79,8 +79,8 @@ source — see [Development](#development).
 Create an agent:
 
 ```ts
-import { Pipeflow, Orchestrator } from "pipeflow";
-import { DeepSeekLLM, DeepgramSTT, KokoroTTS } from "pipeflow/providers";
+import { Pipeflow, Orchestrator } from "@moureau/pipeflow";
+import { DeepSeekLLM, DeepgramSTT, KokoroTTS } from "@moureau/pipeflow/providers";
 
 // Providers are configured explicitly with their own credentials —
 // Pipeflow itself does not hold an API key.
@@ -318,6 +318,9 @@ conversation.on("partial-transcript", ({ text }) => captions.update(text));
 
 ## Multi-participant conversations
 
+<details>
+<summary>Batching participants, conversational state, and the roadmap for floor management and addressing</summary>
+
 Conversations can contain multiple participants and agents.
 
 ```ts
@@ -348,6 +351,8 @@ Multi-participant floor management and addressing (determining when an agent is
 being spoken to using participant context, agent names, aliases, and floor
 rules) are on the roadmap. A wake word is not intended to be a fundamental
 requirement.
+
+</details>
 
 ## Agents
 
@@ -524,6 +529,9 @@ Pagination can be supported for long conversations.
 
 ## Meeting summaries
 
+<details>
+<summary>Summarizing a meeting with a notetaker agent — as a plain LLM task or through a transcript tool</summary>
+
 A meeting summary can simply be another agent task.
 
 ```ts
@@ -585,7 +593,12 @@ The agent does not receive special access to conversations.
 
 If it needs conversation data, **a tool provides that capability**.
 
+</details>
+
 ## Providers
+
+<details>
+<summary>Vendor-independent interfaces and the current adapters: Deepgram, DeepSeek, Kokoro</summary>
 
 Pipeflow separates provider interfaces from provider implementations.
 
@@ -624,7 +637,12 @@ not hold an API key.
 
 Provider availability and configuration are evolving during early development.
 
+</details>
+
 ## Architecture
+
+<details>
+<summary>How the layers fit together: agents, conversations, persistence, providers, transport</summary>
 
 Pipeflow is designed around a small number of independent layers.
 
@@ -677,7 +695,12 @@ Persistence abstractions with adapters such as SQLite and in-memory storage.
 
 Realtime communication between Pipeflow and the application using Pipeflow.
 
+</details>
+
 ## Persistence
+
+<details>
+<summary>Storage adapters: in-memory for development, SQLite for lightweight persistence</summary>
 
 Pipeflow separates persistence from the conversation domain.
 
@@ -696,7 +719,12 @@ SQLite provides a lightweight persistent backend suitable for local applications
 
 The persistence interface is intentionally provider-independent so other storage implementations can be added later.
 
+</details>
+
 ## Realtime architecture
+
+<details>
+<summary>How audio flows through the pipeline as a continuous stream</summary>
 
 A typical voice interaction looks like:
 
@@ -752,13 +780,20 @@ audio
 
 This allows the system to begin producing speech as early as possible.
 
+</details>
+
 ## Open source
+
+<details>
+<summary>Why the project is open and how the provider layer stays modular</summary>
 
 Pipeflow is open source.
 
 The project is designed to make realtime voice infrastructure accessible without requiring applications to implement their own orchestration layer.
 
 The provider layer is intentionally modular so applications can choose between hosted and self-hosted services.
+
+</details>
 
 ## Development
 
@@ -786,6 +821,9 @@ bun run typecheck
 The project uses Bun and TypeScript.
 
 ## Design principles
+
+<details>
+<summary>The rules the API is built around: realtime first, provider agnostic, app-owned tools</summary>
 
 ### Realtime first
 
@@ -827,6 +865,8 @@ Tool
 ```
 
 Everything else should remain replaceable implementation detail for as long as possible.
+
+</details>
 
 ## License
 

@@ -24,7 +24,7 @@ Initial release: a realtime voice infrastructure SDK for TypeScript.
 - **Providers** — vendor-independent LLM/STT/TTS interfaces, plus adapters for DeepSeek (SSE streaming with tool calls), Deepgram (WebSocket streaming with partials/finals), and Kokoro (chunked audio).
 - **Persistence** — provider-independent storage interface with in-memory and SQLite (`bun:sqlite`) adapters, backed by a shared contract test suite.
 - **Transport** — typed message protocol with an in-memory paired transport.
-- **Packaging** — dual ESM/CJS builds, TypeScript declarations, subpath exports (`pipeflow/providers`, `pipeflow/persistence`, `pipeflow/transport`), zero runtime dependencies, and a GitHub Actions publish workflow.
+- **Packaging** — dual ESM/CJS builds, TypeScript declarations, subpath exports (`@moureau/pipeflow/providers`, `@moureau/pipeflow/persistence`, `@moureau/pipeflow/transport`), zero runtime dependencies, and a GitHub Actions publish workflow.
 - **Testing** — a 196-test suite covering the full pipeline with fake providers: streaming, tool pause/resume and timeouts, interruption and barge-in, multi-turn clarification, persistence contracts, and provider adapters.
 
 ### Known limitations

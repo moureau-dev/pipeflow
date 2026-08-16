@@ -28,6 +28,16 @@ function initTiming(generation: Generation): GenerationTiming {
   return (generation.timing ??= { startedAt: generation.startedAt });
 }
 
+/** Timing points a generation can record, keyed by the stream event. */
+type TimingPoint = "firstToken" | "firstTtsText" | "firstTtsRequest" | "firstTtsAudio";
+
+const timingField: Record<TimingPoint, keyof GenerationTiming> = {
+  firstToken: "firstTokenAt",
+  firstTtsText: "firstTtsTextAt",
+  firstTtsRequest: "firstTtsRequestAt",
+  firstTtsAudio: "firstTtsAudioAt",
+};
+
 export interface ConversationOptions {
   id: ConversationId;
   agents?: Agent[];
@@ -304,23 +314,13 @@ export class Conversation {
    * current generation; with one, a dispatched sub-generation. Each point is
    * recorded at most once.
    */
-  noteTiming(
-    point: "firstToken" | "firstTtsText" | "firstTtsRequest" | "firstTtsAudio",
-    generationId?: string,
-  ): void {
+  noteTiming(point: TimingPoint, generationId?: string): void {
     const generation = generationId
       ? this.subGenerations.get(generationId)
       : this.state.currentGeneration;
     if (!generation || generation.status !== "streaming") return;
     const timing = initTiming(generation);
-    const field =
-      point === "firstToken"
-        ? "firstTokenAt"
-        : point === "firstTtsText"
-          ? "firstTtsTextAt"
-          : point === "firstTtsRequest"
-            ? "firstTtsRequestAt"
-            : "firstTtsAudioAt";
+    const field = timingField[point];
     if (timing[field] !== undefined) return;
     timing[field] = Date.now();
     void this.persistence?.appendGeneration(this.id, generation).catch(() => {});

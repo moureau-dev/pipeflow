@@ -203,6 +203,7 @@ create()       // creates the persistent conversation
 start()        // moves the conversation into the started state
 participate()  // adds participants
 listen()       // sends audio
+send()         // injects a finalized text turn (no STT)
 stop()         // finalizes the realtime session
 ```
 
@@ -218,6 +219,10 @@ conversation.listen({ userId, audio });
 ```
 
 This makes it suitable for high-frequency realtime audio streams.
+
+`send({ userId, text })` does the same for a finalized text turn, bypassing
+STT — text-first integrations (chat, Discord text channels) route through the
+same pipeline: routing, coordination, clarification, and generation.
 
 ## Participants
 
@@ -297,6 +302,7 @@ This keeps interactions responsive even when the user interrupts the agent halfw
 The conversation emits a typed event stream the application can subscribe to:
 
 * `audio-in` — raw audio fed in via `listen()`
+* `text-in` — a finalized text turn via `send()`
 * `partial-transcript` — live STT partials (captions)
 * `turn` — a finalized participant turn
 * `transcript` — a transcript entry

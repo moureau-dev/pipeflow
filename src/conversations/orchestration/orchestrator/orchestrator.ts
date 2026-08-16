@@ -35,8 +35,9 @@ export interface OrchestratorOptions {
   agents?: Agent[];
   /** Defaults to the first agent's LLM. */
   llm?: LLM;
-  stt: STT;
-  /** Required when agents are attached. */
+  /** STT for voice turns. Omit for text-only conversations (`send()`). */
+  stt?: STT;
+  /** TTS for spoken output. Not required for text-only conversations. */
   tts?: TTS;
   /** Used to rehydrate conversation history on start. */
   persistence?: Persistence;
@@ -187,7 +188,7 @@ export class Orchestrator {
   private readonly conversation: Conversation;
   private readonly agents: Agent[];
   private readonly llm: LLM | undefined;
-  private readonly stt: STT;
+  private readonly stt: STT | undefined;
   private readonly tts: TTS | undefined;
   private readonly persistence: Persistence | undefined;
   private readonly toolTimeoutMs: number;
@@ -221,17 +222,11 @@ export class Orchestrator {
   constructor(options: OrchestratorOptions) {
     const agents = options.agents ?? [];
     const llm = options.llm ?? agents[0]?.llm;
-    if (!options.stt) {
-      throw new Error("Orchestrator requires an STT provider");
-    }
     if (agents.length > 0 && !llm) {
       throw new Error(
         "Orchestrator requires an LLM when agents are attached: " +
           "pass one explicitly or configure an agent with one",
       );
-    }
-    if (agents.length > 0 && !options.tts) {
-      throw new Error("Orchestrator requires a TTS provider when agents are attached");
     }
     this.conversation = options.conversation;
     this.agents = agents;
@@ -318,6 +313,7 @@ export class Orchestrator {
     this.unsubscribers.push(
       this.conversation.on("stop", () => void this.stop()),
       this.conversation.on("audio-in", (payload) => this.onAudioIn(payload)),
+      this.conversation.on("text-in", ({ userId, text }) => this.onFinal(userId, text)),
       this.conversation.on("interrupt", () => this.onInterrupt()),
       this.conversation.on("tool-call-result", (payload) =>
         this.onToolCallResult(payload.result),
@@ -374,6 +370,7 @@ export class Orchestrator {
   // -------------------------------------------------------------------------
 
   private onAudioIn(payload: { userId: UserId; audio: AudioChunk }): void {
+    if (!this.stt) return; // text-only conversation
     let entry = this.sttSessions.get(payload.userId);
     if (!entry) {
       const session = this.stt.start({});
@@ -544,11 +541,10 @@ export class Orchestrator {
     // Prefer the routed agent's own LLM so agents with different providers
     // keep their intelligence; fall back to the shared LLM.
     const llm = agent.llm ?? this.llm;
-    const tts = this.tts;
-    if (!llm || !tts) return;
+    if (!llm) return;
     this.generating = true;
     try {
-      await this.runGeneration(this.epoch, turn, agent, llm, tts);
+      await this.runGeneration(this.epoch, turn, agent, llm);
     } finally {
       this.generating = false;
     }
@@ -559,7 +555,6 @@ export class Orchestrator {
     turn: Turn,
     agent: Agent,
     llm: LLM,
-    tts: TTS,
   ): Promise<void> {
     const generationId = crypto.randomUUID();
     await this.conversation.pushGeneration({

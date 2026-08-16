@@ -56,6 +56,8 @@ export interface ConversationEvents {
   participant: { conversationId: ConversationId; participant: Participant };
   /** Raw audio fed in via `listen()`. Consumed by the orchestrator. */
   "audio-in": { conversationId: ConversationId; userId: UserId; audio: AudioChunk };
+  /** A finalized text turn via `send()`. Consumed by the orchestrator. */
+  "text-in": { conversationId: ConversationId; userId: UserId; text: string };
   /** Generated audio to be played by the application. */
   audio: { conversationId: ConversationId; audio: AudioChunk };
   turn: { conversationId: ConversationId; turn: Turn };
@@ -81,11 +83,11 @@ export interface ConversationEvents {
  * The public realtime conversation API.
  *
  * A `Conversation` is a runtime handle to a persistent conversation:
- * lifecycle (`start`/`stop`), participants, audio intake (`listen`), and
- * events. When an STT provider is configured, `start()` automatically
- * attaches the orchestrator, which runs the STT/LLM/TTS pipeline and pushes
- * generated audio, turns, transcripts, and tool calls back through
- * conversation events.
+ * lifecycle (`start`/`stop`), participants, audio intake (`listen`), text
+ * turns (`send`), and events. When an STT provider or agents are configured,
+ * `start()` automatically attaches the orchestrator, which runs the
+ * STT/LLM/TTS pipeline (or routes text turns) and pushes generated audio,
+ * turns, transcripts, and tool calls back through conversation events.
  */
 export class Conversation {
   readonly id: ConversationId;
@@ -122,9 +124,9 @@ export class Conversation {
   }
 
   /**
-   * Move the conversation into the started state. When an STT provider is
-   * configured, this also attaches the orchestrator that runs the realtime
-   * pipeline.
+   * Move the conversation into the started state. This attaches the
+   * orchestrator whenever there is realtime work: an STT provider (voice
+   * pipeline) or agents to route text turns to (`send()`).
    */
   async start(): Promise<void> {
     if (this.state.status === "stopped") {
@@ -216,6 +218,25 @@ export class Conversation {
       sequence: this.nextAudioSequence++,
     };
     this.emit("audio-in", { conversationId: this.id, userId: input.userId, audio: chunk });
+  }
+
+  /**
+   * Send a finalized text turn, bypassing STT. Triggers the same pipeline as
+   * a transcribed utterance (routing, coordination, generation, resume) —
+   * useful for text-first integrations such as chat or Discord text channels.
+   */
+  send(input: { userId: UserId; text: string }): void {
+    if (this.state.status !== "started") {
+      throw new Error(`Conversation "${this.id}" is not started`);
+    }
+    if (!this.state.participants.has(input.userId)) {
+      throw new Error(`Unknown participant "${input.userId}"`);
+    }
+    this.emit("text-in", {
+      conversationId: this.id,
+      userId: input.userId,
+      text: input.text,
+    });
   }
 
   /**
@@ -432,7 +453,10 @@ export class Conversation {
   }
 
   private buildRealtime(): Orchestrator | null {
-    if (!this.stt) return null;
+    // Attach the orchestrator whenever there is realtime work: an STT
+    // provider for voice, or agents with an LLM to route text turns to
+    // (`send()`). Agents without an LLM have nothing to generate.
+    if (!this.stt && !this.agents.some((agent) => agent.llm)) return null;
     const common = {
       conversation: this,
       stt: this.stt,

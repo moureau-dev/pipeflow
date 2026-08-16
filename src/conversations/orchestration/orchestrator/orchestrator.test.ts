@@ -332,13 +332,10 @@ describe("Orchestrator", () => {
     ).toThrow(/requires an LLM/);
   });
 
-  test("requires a TTS provider when an agent is attached", () => {
+  test("agents attach without STT or TTS (text-only conversations)", () => {
     const conversation = new Conversation({ id: "conv-1" });
     const agent = new Agent({ name: "Jarvis", llm: new FakeLLM(respond("ok")) });
-    const stt = new FakeSTT();
-    expect(() => new Orchestrator({ conversation, agents: [agent], stt })).toThrow(
-      /requires a TTS provider/,
-    );
+    expect(() => new Orchestrator({ conversation, agents: [agent] })).not.toThrow();
   });
 
   test("transcription-only mode works without an agent", async () => {
@@ -366,6 +363,47 @@ describe("Orchestrator", () => {
       "al: Hello from the meeting.",
     ]);
     expect(await persistence.listGenerations("conv-1")).toEqual([]);
+  });
+
+  test("routes a text turn from send() without STT or TTS", async () => {
+    const persistence = new MemoryPersistence();
+    const conversation = new Conversation({
+      id: "conv-1",
+      persistence,
+      agents: [
+        new Agent({
+          name: "Jarvis",
+          llm: new FakeLLM(respond("Hello, text world!")),
+        }),
+      ],
+    });
+
+    // With agents present, start() attaches the orchestrator on its own.
+    await conversation.start();
+    await conversation.participate({ userId: "alice", aliases: ["al"] });
+
+    // A text turn goes through the same pipeline as a transcribed one:
+    // turn, transcript, and generation, with no STT or TTS involved.
+    conversation.send({ userId: "alice", text: "Hello?" });
+    const deadline = Date.now() + 2000;
+    for (;;) {
+      const generations = await persistence.listGenerations("conv-1");
+      if (generations.some((g) => g.status === "completed")) break;
+      if (Date.now() > deadline) throw new Error("generation did not complete");
+      await Bun.sleep(5);
+    }
+
+    const turns = await persistence.listTurns("conv-1");
+    expect(turns.map((t) => [t.participantName, t.text])).toEqual([["al", "Hello?"]]);
+    const transcript = await persistence.listTranscript("conv-1");
+    expect(transcript.map((e) => e.toString())).toEqual([
+      "al: Hello?",
+      "Jarvis: Hello, text world!",
+    ]);
+    const generations = await persistence.listGenerations("conv-1");
+    expect(generations.map((g) => [g.agentName, g.text, g.status])).toEqual([
+      ["Jarvis", "Hello, text world!", "completed"],
+    ]);
   });
 
   test("routes audio to an STT session and streams the full pipeline", async () => {
@@ -1316,6 +1354,50 @@ describe("Orchestrator", () => {
       expect(generations.map((g) => g.status)).toEqual(["completed", "completed"]);
       expect(generations.at(-1)?.text).toBe("Flying to London.");
       expect(generations.filter((g) => g.status === "cancelled")).toHaveLength(0);
+    });
+
+    test("a text turn resumes a pending coordination question", async () => {
+      let calls = 0;
+      const harness = await setupRoster({
+        coordinatorScript: async function* () {
+          const n = calls++;
+          if (n === 0) {
+            yield { type: "delta", content: "Which city? " };
+            yield {
+              type: "tool_call",
+              id: "call_1",
+              name: "delegate",
+              arguments: JSON.stringify({ action: "user", question: "Which city?" }),
+            };
+            yield { type: "done" };
+            return;
+          }
+          yield { type: "delta", content: "Flying to London. " };
+          yield { type: "done" };
+        },
+        scripts: {},
+      });
+
+      await speak(harness, "alice", "Book a flight.");
+
+      // The answer arrives as a text turn (send) instead of speech: the
+      // parked coordination resumes, nothing is interrupted.
+      harness.conversation.send({ userId: "alice", text: "London." });
+      await harness.orchestrator.whenIdle();
+
+      const generations = await harness.persistence.listGenerations("conv-1");
+      expect(generations.map((g) => [g.text, g.status])).toEqual([
+        ["Which city?", "completed"],
+        ["Flying to London.", "completed"],
+      ]);
+      expect(generations.filter((g) => g.status === "cancelled")).toHaveLength(0);
+      const transcript = await harness.persistence.listTranscript("conv-1");
+      expect(transcript.map((e) => e.toString())).toEqual([
+        "al: Book a flight.",
+        "Jarvis: Which city?",
+        "al: London.",
+        "Jarvis: Flying to London.",
+      ]);
     });
 
     test("delegates to a registered coordination and merges its output", async () => {

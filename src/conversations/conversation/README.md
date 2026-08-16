@@ -29,13 +29,13 @@ await conversation.stop();
 
 ## Events
 
-`start`, `stop`, `participant`, `audio-in`, `audio`, `turn`, `transcript`,
-`generation`, `partial-transcript`, `tool-call`, `tool-call-result`,
-`interrupt`, `error`, `state`.
+`start`, `stop`, `participant`, `audio-in`, `text-in`, `audio`, `turn`,
+`transcript`, `generation`, `partial-transcript`, `tool-call`,
+`tool-call-result`, `interrupt`, `error`, `state`.
 
-The orchestrator consumes `audio-in`, `interrupt`, and `tool-call-result`; it
-pushes generated audio, turns, transcripts, and generations back through the
-same event surface.
+The orchestrator consumes `audio-in`, `text-in`, `interrupt`, and
+`tool-call-result`; it pushes generated audio, turns, transcripts, and
+generations back through the same event surface.
 
 ## Orchestrator-facing output
 
@@ -48,6 +48,9 @@ parallel dispatched tasks never clobber the coordinator's current generation.
 
 - `listen()` is intentionally synchronous: it means "send this audio packet",
   not "wait for this utterance to finish".
+- `send({ userId, text })` injects a finalized text turn, bypassing STT —
+  text-first integrations (chat, Discord text) get the same routing,
+  coordination, and resume behavior as transcribed turns.
 - The conversation does not require an agent — without one, `start()` runs in
   transcription-only mode (turns and transcripts out).
 

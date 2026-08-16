@@ -283,6 +283,46 @@ describe("DeepSeek e2e (requires DEEPSEEK_API_KEY)", () => {
     reportTimeline("conversation pipeline latency", turn!, generation);
   });
 
+  e2e("runs a conversation via text turns (no STT or TTS)", async () => {
+    const persistence = new MemoryPersistence();
+    const api = new Conversations({ persistence });
+
+    const conversation = await api.create({
+      agents: [
+        new Agent({
+          name: "Jarvis",
+          context: "You are a concise, helpful assistant.",
+          llm: makeLlm(),
+        }),
+      ],
+    });
+    await conversation.start();
+    await conversation.participate({ userId: "alice", aliases: ["al"] });
+
+    // Text turns go through the same routing pipeline as transcribed
+    // speech — no STT or TTS involved.
+    conversation.send({ userId: "alice", text: "In one sentence, what is Pipeflow?" });
+
+    await waitFor(async () => {
+      const generations = await persistence.listGenerations(conversation.id);
+      return generations.some((g) => g.status === "completed");
+    });
+
+    const transcript = await api.transcript(conversation.id);
+    expect(transcript.length).toBe(2);
+    expect(transcript[0]?.toString()).toBe(
+      "al: In one sentence, what is Pipeflow?",
+    );
+    expect(transcript.at(-1)?.speakerKind).toBe("agent");
+    expect(transcript.at(-1)?.text.length).toBeGreaterThan(0);
+
+    const [turn] = await persistence.listTurns(conversation.id);
+    const generation = (await persistence.listGenerations(conversation.id)).find(
+      (g) => g.kind !== "sub",
+    )!;
+    reportTimeline("text conversation latency", turn!, generation);
+  });
+
   e2e("coordinates a multi-agent delegation with the real LLM", async () => {
     const stt = new FakeSTT();
     const tts = new FakeTTS();

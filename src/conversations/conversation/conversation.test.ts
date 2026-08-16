@@ -191,6 +191,45 @@ describe("Conversation", () => {
     ).toThrow(/not started/);
   });
 
+  test("send requires a started conversation", () => {
+    const { conversation } = makeConversation();
+    expect(() => conversation.send({ userId: "alice", text: "hi" })).toThrow(
+      /not started/,
+    );
+  });
+
+  test("send requires a known participant", () => {
+    const { conversation } = makeConversation();
+    conversation.start();
+    expect(() => conversation.send({ userId: "alice", text: "hi" })).toThrow(
+      /Unknown participant "alice"/,
+    );
+  });
+
+  test("send emits a text-in event", async () => {
+    const { conversation } = makeConversation();
+    conversation.start();
+    await conversation.participate({ userId: "alice" });
+
+    const texts: string[] = [];
+    conversation.on("text-in", (payload) => texts.push(payload.text));
+
+    conversation.send({ userId: "alice", text: "Hello there" });
+    conversation.send({ userId: "alice", text: "Second turn" });
+
+    expect(texts).toEqual(["Hello there", "Second turn"]);
+  });
+
+  test("send after stop throws", async () => {
+    const { conversation } = makeConversation();
+    conversation.start();
+    await conversation.participate({ userId: "alice" });
+    await conversation.stop();
+    expect(() => conversation.send({ userId: "alice", text: "hi" })).toThrow(
+      /not started/,
+    );
+  });
+
   test("interrupt cancels the current generation and emits interrupt", async () => {
     const { conversation, persistence } = makeConversation();
     const events: string[] = [];

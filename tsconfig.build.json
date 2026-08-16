@@ -5,11 +5,8 @@
     "noEmit": false,
     "emitDeclarationOnly": true,
     "declaration": true,
-    "outDir": "dist",
-    "rootDir": "src",
-    // Rewrite `./foo.ts` imports to `./foo.js` in the emitted declarations so
-    // consumers resolve them with standard node16/bundler resolution.
-    "rewriteRelativeImportExtensions": true
+    "outDir": "dist/types",
+    "rootDir": "src"
   },
   "include": ["src"],
   "exclude": ["src/**/*.test.ts", "src/persistence/contract-tests.ts"]

@@ -1,26 +1,56 @@
 {
   "name": "pipeflow",
+  "version": "0.1.0",
   "type": "module",
-  "private": true,
-  "main": "./dist/index.js",
-  "module": "./dist/index.js",
-  "types": "./dist/index.d.ts",
+  "sideEffects": false,
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/types/index.d.ts",
   "exports": {
     ".": {
-      "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "types": "./dist/types/index.d.ts",
+      "import": "./dist/esm/index.js",
+      "require": "./dist/cjs/index.js",
+      "default": "./dist/esm/index.js"
     },
     "./providers": {
-      "types": "./dist/providers/index.d.ts",
-      "import": "./dist/providers.js"
+      "types": "./dist/types/providers/index.d.ts",
+      "import": "./dist/esm/providers/index.js",
+      "require": "./dist/cjs/providers/index.js",
+      "default": "./dist/esm/providers/index.js"
+    },
+    "./providers/*": {
+      "types": "./dist/types/providers/*/index.d.ts",
+      "import": "./dist/esm/providers/*/index.js",
+      "require": "./dist/cjs/providers/*/index.js",
+      "default": "./dist/esm/providers/*/index.js"
     },
     "./persistence": {
-      "types": "./dist/persistence/index.d.ts",
-      "import": "./dist/persistence.js"
+      "types": "./dist/types/persistence/index.d.ts",
+      "import": "./dist/esm/persistence/index.js",
+      "require": "./dist/cjs/persistence/index.js",
+      "default": "./dist/esm/persistence/index.js"
+    },
+    "./persistence/*": {
+      "types": "./dist/types/persistence/*/index.d.ts",
+      "import": "./dist/esm/persistence/*/index.js",
+      "require": "./dist/cjs/persistence/*/index.js",
+      "default": "./dist/esm/persistence/*/index.js"
     },
     "./transport": {
-      "types": "./dist/transport/index.d.ts",
-      "import": "./dist/transport.js"
+      "types": "./dist/types/transport/index.d.ts",
+      "import": "./dist/esm/transport/index.js",
+      "require": "./dist/cjs/transport/index.js",
+      "default": "./dist/esm/transport/index.js"
+    },
+    "./transport/*": {
+      "types": "./dist/types/transport/*/index.d.ts",
+      "import": "./dist/esm/transport/*/index.js",
+      "require": "./dist/cjs/transport/*/index.js",
+      "default": "./dist/esm/transport/*/index.js"
     }
   },
   "files": ["dist"],

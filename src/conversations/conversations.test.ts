@@ -267,11 +267,10 @@ describe("Conversations", () => {
     expect(receptionistLlm.requests).toHaveLength(0);
     expect(specialistLlm.requests[0]!.messages).toEqual([
       { role: "system", name: "Technical Specialist", content: "You solve problems." },
-      { role: "user", content: "al: Ask the technical specialist to fix it." },
       {
         role: "user",
         content: expect.stringMatching(
-          /^Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.\nThe current user is al with user id alice \(aliases: al\)\.$/,
+          /^al: Ask the technical specialist to fix it\.\n\nAdditional context: Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\. The current user is al with user id alice \(aliases: al\)\.$/,
         ),
       },
     ]);
@@ -381,15 +380,15 @@ describe("Conversations", () => {
     await waitFor(() => llm.requests.length >= 1);
     await waitFor(async () => (await api.transcript(conversation.id)).length >= 2);
 
-    // The orchestrator ran the pipeline: the LLM saw the turn, TTS spoke,
-    // and both the turn and the generation are persisted.
+    // The orchestrator ran the pipeline: the LLM saw the turn (with its
+    // automatic context suffix), TTS spoke, and both the turn and the
+    // generation are persisted.
     expect(llm.requests[0]!.messages).toEqual([
       { role: "system", name: "Jarvis", content: "Be concise." },
-      { role: "user", content: "al: Hello there." },
       {
         role: "user",
         content: expect.stringMatching(
-          /^Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.\nThe current user is al with user id alice \(aliases: al\)\.$/,
+          /^al: Hello there\.\n\nAdditional context: Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\. The current user is al with user id alice \(aliases: al\)\.$/,
         ),
       },
     ]);

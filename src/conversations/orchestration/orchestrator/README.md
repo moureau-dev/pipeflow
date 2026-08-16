@@ -29,10 +29,12 @@ Each finalized participant turn is routed:
 
 ## Realtime behaviors
 
-- **Context stamping**: every generation is stamped with the current time and
-  the speaker's identity (user id + aliases), so the model can reason about
-  "now" and "me" — e.g. "enhance the message I just sent" resolves to a real
-  user id the application's tools can act on.
+- **Context suffix**: every user turn automatically carries a short context
+  suffix — the time, the speaker's identity (user id + aliases), and the other
+  participants — so the model can reason about "now" and "me" (e.g. "enhance
+  the message I just sent" resolves to a real user id the application's tools
+  can act on). Applied once when the turn enters history; every generation
+  path (direct, coordination, delegated) inherits it.
 - **Streaming**: LLM deltas are buffered into sentences and synthesized to TTS
   immediately; audio chunks reach the application as `audio` events.
 - **Tool calls** pause the generation; the application resolves them through

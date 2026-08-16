@@ -103,17 +103,28 @@ export function formatTimeContext(date = new Date()): string {
 }
 
 /**
- * An identity stamp for the turn's speaker, so the model can reason about
- * "me"/"I" (e.g. "enhance the message I just sent") instead of only seeing
- * the display alias in the history.
+ * A short context suffix appended automatically to every user turn, so the
+ * model knows the time and who is speaking (and who else is in the
+ * conversation) — e.g. "enhance the message I just sent" resolves to a real
+ * user id. Applied once, when the turn enters history; every generation path
+ * (direct, coordination, delegated) seeds from that history.
  */
-export function formatParticipantContext(participant: Participant): string {
-  const displayName = participant.aliases[0] ?? participant.userId;
-  const aliases =
-    participant.aliases.length > 0
-      ? ` (aliases: ${participant.aliases.join(", ")})`
+export function formatTurnContext(
+  participant: Participant,
+  participants: readonly Participant[],
+  date = new Date(),
+): string {
+  const describe = (p: Participant): string => {
+    const displayName = p.aliases[0] ?? p.userId;
+    const aliases = p.aliases.length > 0 ? ` (aliases: ${p.aliases.join(", ")})` : "";
+    return `${displayName} with user id ${p.userId}${aliases}`;
+  };
+  const others = participants.filter((p) => p.userId !== participant.userId);
+  const othersLine =
+    others.length > 0
+      ? ` The other participants are ${others.map(describe).join(", ")}.`
       : "";
-  return `The current user is ${displayName} with user id ${participant.userId}${aliases}.`;
+  return `\n\nAdditional context: ${formatTimeContext(date)} The current user is ${describe(participant)}.${othersLine}`;
 }
 
 /**
@@ -312,7 +323,7 @@ export class Orchestrator {
         if (entry.kind === "turn") {
           this.history.push({
             role: "user",
-            content: `${entry.turn.participantName}: ${entry.turn.text}`,
+            content: this.historyMessage(entry.turn),
           });
         } else {
           this.history.push({
@@ -451,6 +462,19 @@ export class Orchestrator {
     void this.processTurn(turn);
   }
 
+  /**
+   * The user-message form of a turn: display name, text, and the automatic
+   * context suffix (time + speaker + roster) baked in at history time.
+   */
+  private historyMessage(turn: Turn): string {
+    const participant = this.conversation.state.participants.get(turn.participantId);
+    const participants = [...this.conversation.state.participants.values()];
+    const context = participant
+      ? formatTurnContext(participant, participants, new Date(turn.startedAt))
+      : "";
+    return `${turn.participantName}: ${turn.text}${context}`;
+  }
+
   private async processTurn(turn: Turn): Promise<void> {
     try {
       await this.conversation.pushTurn(turn);
@@ -461,7 +485,7 @@ export class Orchestrator {
       });
       this.history.push({
         role: "user",
-        content: `${turn.participantName}: ${turn.text}`,
+        content: this.historyMessage(turn),
       });
       if (this.agents.length === 0) return;
 
@@ -591,16 +615,6 @@ export class Orchestrator {
       messages.push({ role: "system", name: agent.name, content: agent.context });
     }
     messages.push(...this.history);
-
-    // Stamp the turn's speaker (so "I"/"me" resolves to an identity) and the
-    // current time — the same temporal context delegated agents receive.
-    const participant = this.conversation.state.participants.get(turn.participantId);
-    if (participant) {
-      messages.push({
-        role: "user",
-        content: `${formatTimeContext()}\n${formatParticipantContext(participant)}`,
-      });
-    }
 
     let text = "";
 

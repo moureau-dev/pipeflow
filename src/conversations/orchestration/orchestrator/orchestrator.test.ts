@@ -3,7 +3,12 @@ import { Agent } from "../../../agents/agent";
 import { Tool } from "../../../agents/tools/tools";
 import { Conversation } from "../../conversation/conversation";
 import { MemoryPersistence } from "../../../persistence/adapters/memory/memory";
-import { Orchestrator, pickAgent, formatTimeContext, formatParticipantContext } from "./orchestrator";
+import {
+  Orchestrator,
+  pickAgent,
+  formatTimeContext,
+  formatTurnContext,
+} from "./orchestrator";
 import type { AudioChunk, ToolCall, UserId } from "../../types";
 import type {
   LLM,
@@ -246,12 +251,31 @@ function respond(text: string): LLMScript {
   };
 }
 
-test("formatParticipantContext stamps the speaker's identity", () => {
+test("formatTurnContext appends time, speaker, and roster", () => {
+  const date = new Date(2026, 7, 16, 14, 30); // 16 aug 2026, 14:30
   expect(
-    formatParticipantContext({ userId: "12345", aliases: ["alice", "al"], joinedAt: 0 }),
-  ).toBe("The current user is alice with user id 12345 (aliases: alice, al).");
-  expect(formatParticipantContext({ userId: "67890", aliases: [], joinedAt: 0 })).toBe(
-    "The current user is 67890 with user id 67890.",
+    formatTurnContext(
+      { userId: "alice", aliases: ["al"], joinedAt: 0 },
+      [{ userId: "alice", aliases: ["al"], joinedAt: 0 }],
+      date,
+    ),
+  ).toBe(
+    "\n\nAdditional context: Now it is 16 aug 2026, 14:30. " +
+      "The current user is al with user id alice (aliases: al).",
+  );
+  expect(
+    formatTurnContext(
+      { userId: "alice", aliases: ["al"], joinedAt: 0 },
+      [
+        { userId: "alice", aliases: ["al"], joinedAt: 0 },
+        { userId: "bob", aliases: ["robert", "rob"], joinedAt: 0 },
+      ],
+      date,
+    ),
+  ).toBe(
+    "\n\nAdditional context: Now it is 16 aug 2026, 14:30. " +
+      "The current user is al with user id alice (aliases: al). " +
+      "The other participants are robert with user id bob (aliases: robert, rob).",
   );
 });
 
@@ -415,6 +439,39 @@ describe("Orchestrator", () => {
     ]);
   });
 
+  test("stamps the other participants into the turn context", async () => {
+    const persistence = new MemoryPersistence();
+    const llm = new FakeLLM(respond("ok"));
+    const conversation = new Conversation({
+      id: "conv-1",
+      persistence,
+      agents: [new Agent({ name: "Jarvis", llm })],
+    });
+    await conversation.start();
+    await conversation.participate([
+      { userId: "alice", aliases: ["al"] },
+      { userId: "bob", aliases: ["robert", "rob"] },
+    ]);
+
+    // "enhance the message Bob sent" — the model must know who Bob is even
+    // though he has never spoken.
+    conversation.send({ userId: "alice", text: "Enhance the message Bob sent." });
+    const deadline = Date.now() + 2000;
+    for (;;) {
+      const done = await persistence.listGenerations("conv-1");
+      if (done.some((g) => g.status === "completed")) break;
+      if (Date.now() > deadline) throw new Error("generation did not complete");
+      await Bun.sleep(5);
+    }
+
+    expect(llm.requests[0]!.messages.at(-1)).toEqual({
+      role: "user",
+      content: expect.stringMatching(
+        /^al: Enhance the message Bob sent\.\n\nAdditional context: Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\. The current user is al with user id alice \(aliases: al\)\. The other participants are robert with user id bob \(aliases: robert, rob\)\.$/,
+      ),
+    });
+  });
+
   test("routes audio to an STT session and streams the full pipeline", async () => {
     const harness = await setup({
       script: async function* () {
@@ -439,15 +496,14 @@ describe("Orchestrator", () => {
       ["al", "Hello there."],
     ]);
 
-    // LLM saw the system context and the user turn, plus the speaker/time
-    // stamp so "I"/"me" resolves to an identity.
+    // LLM saw the system context and the user turn with its automatic
+    // context suffix (time + speaker).
     expect(harness.llm.requests[0]!.messages).toEqual([
       { role: "system", name: "Jarvis", content: "Be concise." },
-      { role: "user", content: "al: Hello there." },
       {
         role: "user",
         content: expect.stringMatching(
-          /^Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.\nThe current user is al with user id alice \(aliases: al\)\.$/,
+          /^al: Hello there\.\n\nAdditional context: Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\. The current user is al with user id alice \(aliases: al\)\.$/,
         ),
       },
     ]);
@@ -768,16 +824,20 @@ describe("Orchestrator", () => {
     await speak(harness, "alice", "In London.");
 
     // The second request carries the whole exchange so the follow-up
-    // answer can reference it, plus the current speaker stamp.
+    // answer can reference it; each turn carries its own context suffix.
     expect(harness.llm.requests[1]!.messages).toEqual([
       { role: "system", name: "Jarvis", content: "Be concise." },
-      { role: "user", content: "al: What is the weather?" },
-      { role: "assistant", name: "Jarvis", content: "Which city?" },
-      { role: "user", content: "al: In London." },
       {
         role: "user",
         content: expect.stringMatching(
-          /^Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.\nThe current user is al with user id alice \(aliases: al\)\.$/,
+          /^al: What is the weather\?\n\nAdditional context: Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\. The current user is al with user id alice \(aliases: al\)\.$/,
+        ),
+      },
+      { role: "assistant", name: "Jarvis", content: "Which city?" },
+      {
+        role: "user",
+        content: expect.stringMatching(
+          /^al: In London\.\n\nAdditional context: Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\. The current user is al with user id alice \(aliases: al\)\.$/,
         ),
       },
     ]);
@@ -832,7 +892,9 @@ describe("Orchestrator", () => {
     expect(String(understandMessages[0]!.content)).toContain("Technical Specialist");
     expect(understandMessages.at(-1)).toEqual({
       role: "user",
-      content: "al: Hello there.",
+      content: expect.stringMatching(
+        /^al: Hello there\.\n\nAdditional context: Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\. The current user is al with user id alice \(aliases: al\)\.$/,
+      ),
     });
 
     // An addressed turn goes straight to the specialist — and runs on the
@@ -843,25 +905,29 @@ describe("Orchestrator", () => {
     expect(specialistLlm.requests).toHaveLength(1);
     expect(receptionistLlm.requests).toHaveLength(1);
     // The specialist gets its own system context plus the shared history,
-    // with the coordination's reply attributed by name, and the current
-    // speaker stamped so it knows who "I" is.
+    // with the coordination's reply attributed by name and each turn
+    // carrying its automatic context suffix.
     expect(specialistLlm.requests[0]!.messages).toEqual([
       {
         role: "system",
         name: "Technical Specialist",
         content: "You solve technical problems.",
       },
-      { role: "user", content: "al: Hello there." },
+      {
+        role: "user",
+        content: expect.stringMatching(
+          /^al: Hello there\.\n\nAdditional context: Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\. The current user is al with user id alice \(aliases: al\)\.$/,
+        ),
+      },
       {
         role: "assistant",
         name: "Receptionist",
         content: "How can I help?",
       },
-      { role: "user", content: "al: Ask the technical specialist to fix it." },
       {
         role: "user",
         content: expect.stringMatching(
-          /^Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.\nThe current user is al with user id alice \(aliases: al\)\.$/,
+          /^al: Ask the technical specialist to fix it\.\n\nAdditional context: Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\. The current user is al with user id alice \(aliases: al\)\.$/,
         ),
       },
     ]);
@@ -980,6 +1046,7 @@ describe("Orchestrator", () => {
       const travelPrompt = travel.requests[0]!.messages.at(-1)!;
       expect(travelPrompt.role).toBe("user");
       expect(travelPrompt.content).toContain("Find flights Paris to London tomorrow morning.");
+      // The dispatched prompt carries a time stamp for temporal context.
       expect(travelPrompt.content).toMatch(/Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.$/);
       expect(travel.requests[0]!.messages[0]).toEqual({
         role: "system",
@@ -1684,13 +1751,17 @@ describe("Orchestrator", () => {
       // summary stands in for it.
       expect(llm.requests[0]!.messages).toEqual([
         { role: "system", name: "Jarvis", content: "Be concise." },
-        { role: "user", content: "alice: Hello from before." },
-        { role: "assistant", name: "Jarvis", content: "Summary answer." },
-        { role: "user", content: "alice: Can you continue?" },
         {
           role: "user",
           content: expect.stringMatching(
-            /^Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.\nThe current user is alice with user id alice\.$/,
+            /^alice: Hello from before\.\n\nAdditional context: Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\. The current user is alice with user id alice\.$/,
+          ),
+        },
+        { role: "assistant", name: "Jarvis", content: "Summary answer." },
+        {
+          role: "user",
+          content: expect.stringMatching(
+            /^alice: Can you continue\?\n\nAdditional context: Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\. The current user is alice with user id alice\.$/,
           ),
         },
       ]);
@@ -1737,12 +1808,16 @@ describe("Orchestrator", () => {
 
     expect(llm.requests[0]!.messages).toEqual([
       { role: "system", name: "Jarvis", content: "Be concise." },
-      { role: "user", content: "alice: Hello from before." },
-      { role: "user", content: "alice: Can you continue?" },
       {
         role: "user",
         content: expect.stringMatching(
-          /^Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\.\nThe current user is alice with user id alice\.$/,
+          /^alice: Hello from before\.\n\nAdditional context: Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\. The current user is alice with user id alice\.$/,
+        ),
+      },
+      {
+        role: "user",
+        content: expect.stringMatching(
+          /^alice: Can you continue\?\n\nAdditional context: Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\. The current user is alice with user id alice\.$/,
         ),
       },
     ]);

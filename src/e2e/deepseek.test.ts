@@ -78,13 +78,15 @@ class FakeTTS implements TTS {
 
 /**
  * Print the latency timeline of a generation relative to its turn boundary.
+ * Generation start and turn boundary are distinct events, so both are shown:
  *
  * ```text
- * Turn boundary       0ms
- * LLM first token   +280ms
- * TTS first chunk   +410ms
- * Audio delivered   +430ms
- * LLM completed    +1,240ms
+ * Turn boundary        0ms
+ * Generation started +12ms
+ * LLM first token   +420ms
+ * TTS started       +430ms
+ * Audio delivered   +690ms
+ * Generation done  +1800ms
  * ```
  */
 function reportTimeline(
@@ -108,10 +110,11 @@ function reportTimeline(
   };
   console.log(`\n${label}`);
   row("Turn boundary", turn.startedAt);
+  row("Generation started", generation.startedAt);
   row("LLM first token", timing.firstTokenAt);
-  row("TTS first chunk", ttsRequests[0]?.firstChunkAt);
+  row("TTS started", ttsRequests[0]?.firstChunkAt);
   row("Audio delivered", timing.firstAudioAt);
-  row("LLM completed", timing.completedAt);
+  row("Generation done", timing.completedAt);
 }
 
 async function waitFor(
@@ -279,5 +282,64 @@ describe("DeepSeek e2e (requires DEEPSEEK_API_KEY)", () => {
     const [turn] = await persistence.listTurns(conversation.id);
     const coordinatorGen = generations.find((g) => g.agentName === "Jarvis")!;
     reportTimeline("coordination latency", turn!, coordinatorGen, tts.requests);
+  });
+
+  e2e("interrupts a streaming generation and starts fresh on the next turn", async () => {
+    const stt = new FakeSTT();
+    const tts = new FakeTTS();
+    const persistence = new MemoryPersistence();
+    const api = new Conversations({ persistence, stt, tts });
+
+    const conversation = await api.create({
+      agents: [
+        new Agent({
+          name: "Jarvis",
+          context:
+            "You are a verbose storyteller. Always answer with a long story of at least 300 words.",
+          llm: makeLlm(),
+        }),
+      ],
+    });
+    await conversation.start();
+    await conversation.participate({ userId: "alice", aliases: ["al"] });
+
+    conversation.listen({ userId: "alice", audio: new Uint8Array([1]) });
+    stt.sessions[0]!.emitFinal("Tell me a long story about a dragon.");
+
+    // Interrupt as soon as the real model is streaming (first token seen),
+    // while the long story is still being generated.
+    await waitFor(async () => {
+      const generations = await persistence.listGenerations(conversation.id);
+      return generations.some((g) => g.timing?.firstTokenAt !== undefined);
+    });
+    conversation.interrupt();
+
+    await waitFor(async () => {
+      const generations = await persistence.listGenerations(conversation.id);
+      return generations.some((g) => g.status === "cancelled");
+    });
+
+    // The interrupted generation was cancelled and never reached the
+    // transcript.
+    const interrupted = await persistence.listGenerations(conversation.id);
+    expect(interrupted[0]?.status).toBe("cancelled");
+    expect(interrupted[0]?.timing?.firstTokenAt).toBeDefined();
+    const transcript = await api.transcript(conversation.id);
+    expect(transcript.map((entry) => entry.toString())).toEqual([
+      "al: Tell me a long story about a dragon.",
+    ]);
+
+    // A fresh turn works after the interrupt.
+    conversation.listen({ userId: "alice", audio: new Uint8Array([1]) });
+    stt.sessions[0]!.emitFinal("Actually, keep it to one sentence.");
+    await waitFor(async () => {
+      const generations = await persistence.listGenerations(conversation.id);
+      return generations.some((g) => g.status === "completed");
+    });
+
+    const after = await api.transcript(conversation.id);
+    expect(after.length).toBeGreaterThanOrEqual(2);
+    expect(after.at(-1)?.speakerKind).toBe("agent");
+    expect(after.at(-1)?.text.length).toBeGreaterThan(0);
   });
 });

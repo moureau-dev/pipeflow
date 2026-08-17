@@ -38,9 +38,11 @@ the roadmap — the interface is deliberately small so they slot in as adapters.
 [`streamobject/`](streamobject/) is a research module, not part of the
 `Transport` contract and not exported from the public API. It explores a
 schema-bound streaming semantic protocol — a wire codec, an incremental JSON
-adapter, and a `StreamObject` consumer API that turns any text-chunk source
-into field/item/object completion events. It is the natural candidate wire
-representation for the realtime transports above, but nothing is integrated
-yet. See [`streamobject/README.md`](streamobject/README.md) for the protocol spec.
+adapter, and a `FieldStream` semantic API with two source implementations
+(`StreamObject` for text-chunk sources, `ConversationStream` in conversations
+for conversation events) that turn a source into field/item/object completion
+events. It is the natural candidate wire representation for the realtime
+transports above, but nothing is integrated yet. See
+[`streamobject/README.md`](streamobject/README.md) for the protocol spec.
 
 See the root [README](../../README.md) for the public API.

@@ -231,7 +231,7 @@ identical event sequence and identical materialized objects.
   decode; assert same events and same materialized object. Run over millions of
   sequences, including split-at-every-character cases.
 - **Executable spec:** the reference implementation in
-  `src/transport/streamobject/reference.ts` (plus `reference.test.ts`) is the
+  `reference/reference.ts` (plus `reference/reference.test.ts`) is the
   conformance harness. Every implementation — including the future
   arena-backed receiver — must satisfy:
 
@@ -276,3 +276,42 @@ optimized receiver exists.
 - Abort reason payloads
 - Session flow control / backpressure
 - Schema evolution beyond append-at-end
+
+## Semantic API
+
+The consumer surface lives above the wire and the adapters. A
+[`FieldStream`](field-stream/field-stream.ts) turns any source into completion
+events, with an explicit per-object lifecycle:
+
+```text
+STREAMING ──emitObject──▶ DONE
+    │
+    ├──cancel()──▶ CANCELLED
+    └──fail()────▶ FAILED
+```
+
+- Exactly-once: within an object, completion handlers fire at most once per
+  boundary and never after a terminal state.
+- `cancel()` is idempotent and is not an error; it stops the producer through
+  the `onCancel` hook.
+- Sources are reusable: `beginObject()` starts each new object.
+
+Implementations:
+
+- [`StreamObject`](stream-object/stream-object.ts) — consumes an
+  `AsyncIterable<string>` (LLM deltas, SSE, wire records) through the
+  incremental JSON adapter.
+- [`ConversationStream`](../../conversations/stream/conversation-stream.ts) —
+  consumes conversation events: one object per top-level generation, `text`
+  as an ordered sequence of completed text fragments, and `cancel()`
+  interrupting the generation.
+
+```ts
+const replies = new ConversationStream(conversation);
+replies.whenItem("text", (fragment, index) => render(fragment));
+replies.when("agent", (agent) => showSpeaker(agent));
+replies.whenObjectDone((reply) => finalize(reply));
+```
+
+`when` means completion, not mutation: handlers never see chunks, JSON, SSE,
+or the wire codec.

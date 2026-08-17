@@ -8,6 +8,7 @@ transcripts, and events.
 conversations/
 ├── conversation/       the Conversation runtime handle
 ├── orchestration/      the realtime pipeline (orchestrator + coordination)
+├── stream/             the semantic reply stream (ConversationStream)
 ├── transcription/      the in-memory transcript model
 ├── types.ts            core domain types (Turn, Generation, Participant, …)
 └── conversations.ts    the Conversations API (create / transcript / get)
@@ -24,6 +25,11 @@ conversations/
   [transcription/README.md](./transcription/README.md).
 - **Orchestration** — the realtime state machine and coordination layer. See
   [orchestration/README.md](./orchestration/README.md).
+- **ConversationStream** — the conversation's semantic reply stream: one
+  object per top-level generation, `text` as an ordered sequence of completed
+  fragments, `when`/`whenItem`/`whenObjectDone` completion handlers, and
+  `cancel()` interrupting the generation. See
+  [stream/README.md](./stream/README.md).
 - **Turns & generations** — a `Turn` is a finalized participant utterance; a
   `Generation` is an agent response (with `kind: "sub"` for delegated work and
   `parentGenerationId` linking sub-generations to the coordinator that
@@ -37,7 +43,7 @@ conversations/
 
 Subpath exports (`@moureau/pipeflow/conversations` and
 `@moureau/pipeflow/conversations/*`) expose `Conversation`, `Conversations`,
-`Orchestrator`, `Coordination`, transcription, and the domain types for power
-users.
+`ConversationStream`, `Orchestrator`, `Coordination`, transcription, and the
+domain types for power users.
 
 See the root [README](../../README.md) for the public API.

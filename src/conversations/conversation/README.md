@@ -31,19 +31,24 @@ await conversation.stop();
 ## Events
 
 `start`, `stop`, `participant`, `audio-in`, `text-in`, `audio`, `turn`,
-`transcript`, `generation`, `partial-transcript`, `tool-call`,
-`tool-call-result`, `interrupt`, `error`, `state`.
+`transcript`, `generation`, `text-delta`, `generation-complete`,
+`partial-transcript`, `tool-call`, `tool-call-result`, `interrupt`, `error`,
+`state`.
 
 The orchestrator consumes `audio-in`, `text-in`, `interrupt`, and
 `tool-call-result`; it pushes generated audio, turns, transcripts, and
-generations back through the same event surface.
+generations back through the same event surface. `text-delta` streams the
+current generation's text as LLM deltas arrive (including the agent name when
+the generation is known); `generation-complete` fires exactly once when the
+top-level generation finishes — the semantic boundary consumers can wait on.
 
 ## Orchestrator-facing output
 
-`pushTurn`, `pushTranscript`, `pushGeneration`, `completeGeneration`,
-`pushSubGeneration` / `completeSubGeneration` / `cancelSubGeneration`,
-`requestToolCall`, `resolveToolCall`. Sub-generations live in their own store so
-parallel dispatched tasks never clobber the coordinator's current generation.
+`pushTurn`, `pushTranscript`, `pushGeneration`, `pushTextDelta`,
+`completeGeneration`, `pushSubGeneration` / `completeSubGeneration` /
+`cancelSubGeneration`, `requestToolCall`, `resolveToolCall`. Sub-generations
+live in their own store so parallel dispatched tasks never clobber the
+coordinator's current generation.
 
 ## Notes
 

@@ -339,11 +339,19 @@ describe("Coordination", () => {
     const output = await coordination.resume(state, "Paris.");
 
     expect(output).toBe("Flying to Paris.");
+    // The parked state carries a tool response for the delegate call (providers
+    // reject unanswered assistant tool_calls), then the user's answer.
     expect(llm.requests[1]!.messages.at(-1)).toEqual({
       role: "user",
       content: "Paris.",
     });
-    expect(llm.requests[1]!.messages.at(-2)).toMatchObject({
+    expect(llm.requests[1]!.messages.at(-2)).toEqual({
+      role: "tool",
+      toolCallId: "call_1",
+      name: "delegate",
+      content: JSON.stringify({ action: "user", question: "Which city?" }),
+    });
+    expect(llm.requests[1]!.messages.at(-3)).toMatchObject({
       role: "assistant",
       toolCalls: [{ id: "call_1", name: "delegate" }],
     });

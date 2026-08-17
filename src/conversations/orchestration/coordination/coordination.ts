@@ -507,6 +507,15 @@ export class Coordination {
             }
             case "user": {
               // The question was (typically) narrated; park the whole stack.
+              // The assistant tool call needs a matching tool response in the
+              // parked state — providers reject assistant tool_calls that are
+              // never answered, and the user's answer resumes the loop.
+              state.messages.push({
+                role: "tool",
+                toolCallId: call.id,
+                name: "delegate",
+                content: JSON.stringify({ action: "user", question: action.question }),
+              });
               await this.runtime.askUser({ coordination: this, state }, action.question);
               throw new Error("unreachable");
             }

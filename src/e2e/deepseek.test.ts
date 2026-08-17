@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import { Agent } from "../agents/agent";
 import { Tool } from "../agents/tools/tools";
+import { Conversation } from "../conversations/conversation/conversation";
+import { Orchestrator } from "../conversations/orchestration/orchestrator/orchestrator";
+import { buildClarifyPrompt } from "../conversations/orchestration/coordination/coordination";
 import { Conversations } from "../conversations/conversations";
 import { MemoryPersistence } from "../persistence/adapters/memory/memory";
 import { DeepSeekLLM } from "../providers/llm/adapters/deepseek/deepseek";
@@ -384,6 +387,93 @@ describe("DeepSeek e2e (requires DEEPSEEK_API_KEY)", () => {
     const [turn] = await persistence.listTurns(conversation.id);
     const coordinatorGen = generations.find((g) => g.agentName === "Jarvis")!;
     reportTimeline("coordination latency", turn!, coordinatorGen);
+  });
+
+  e2e("measures a clarify chain with the real LLM", async () => {
+    const persistence = new MemoryPersistence();
+    const conversation = new Conversation({ id: "conv-clarify", persistence });
+    const llm = makeLlm();
+    const orchestrator = new Orchestrator({
+      conversation,
+      agents: [
+        new Agent({ name: "Jarvis", context: "You are a travel assistant.", llm }),
+        new Agent({ name: "Helper", context: "You are a minimal assistant.", llm }),
+      ],
+      llm,
+      persistence,
+      coordinations: {
+        // Steer the entry point to route underspecified requests through
+        // clarify, so the chain is exercised deterministically enough to
+        // measure without a second model.
+        understand: {
+          prompt:
+            "You are the conversation coordinator. If the user's request is " +
+            "missing any required detail, delegate to the clarify coordination " +
+            "with the request as input. Otherwise answer directly or delegate " +
+            "to an agent.",
+        },
+        clarify: { prompt: buildClarifyPrompt() },
+      },
+    });
+
+    await conversation.start();
+    await conversation.participate({ userId: "alice", aliases: ["al"] });
+    await orchestrator.start();
+
+    // 1. Underspecified request → understand delegates → clarify asks a
+    // question and the chain parks (suspension).
+    conversation.send({ userId: "alice", text: "Book me a flight." });
+    await waitFor(async () => {
+      const gens = await persistence.listGenerations(conversation.id);
+      return gens.some((g) => g.kind !== "sub" && g.status === "completed");
+    });
+    const questionGen = (await persistence.listGenerations(conversation.id)).find(
+      (g) => g.kind !== "sub" && g.status === "completed",
+    )!;
+    expect(questionGen.text).toMatch(/\?/); // the chain parked on a question
+
+    // 2. Answer, and keep answering follow-up questions until the chain
+    // completes with a final, non-question answer. A real clarify loop asks
+    // one question at a time, so this may take several rounds (bounded).
+    const answers = [
+      "London, tomorrow.",
+      "From Paris.",
+      "Two passengers.",
+      "Economy class.",
+      "Morning flight.",
+    ];
+    let finalText = "";
+    for (let round = 0; round < answers.length; round++) {
+      conversation.send({ userId: "alice", text: answers[round]! });
+      await waitFor(
+        async () => {
+          const gens = await persistence.listGenerations(conversation.id);
+          return (
+            gens.filter((g) => g.kind !== "sub" && g.status === "completed").length >=
+            2 + round
+          );
+        },
+        60_000,
+      );
+      const lastGen = (await persistence.listGenerations(conversation.id))
+        .filter((g) => g.kind !== "sub" && g.status === "completed")
+        .at(-1)!;
+      if (!lastGen.text.endsWith("?")) {
+        finalText = lastGen.text;
+        break;
+      }
+    }
+    expect(finalText.length).toBeGreaterThan(0);
+    // The multi-round exchange actually happened: the question, the answers,
+    // and the final generation.
+    expect((await persistence.listTranscript(conversation.id)).length).toBeGreaterThan(3);
+
+    const [turn] = await persistence.listTurns(conversation.id);
+    const finalGen = (await persistence.listGenerations(conversation.id))
+      .filter((g) => g.kind !== "sub" && g.status === "completed")
+      .at(-1)!;
+    reportTimeline("clarify question hop", turn!, questionGen);
+    reportTimeline("clarify chain (question → answer → final)", turn!, finalGen);
   });
 
   e2e("runs a multi-tool agent with concurrent tool calls", async () => {

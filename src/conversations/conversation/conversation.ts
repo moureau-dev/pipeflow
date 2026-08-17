@@ -63,6 +63,20 @@ export interface ConversationEvents {
   turn: { conversationId: ConversationId; turn: Turn };
   transcript: { conversationId: ConversationId; entry: TranscriptEntry };
   generation: { conversationId: ConversationId; generation: Generation };
+  /**
+   * The current generation's text, streamed as LLM deltas arrive. Emitted by
+   * the orchestrator; the agent name is included when the generation is known.
+   */
+  "text-delta": {
+    conversationId: ConversationId;
+    text: string;
+    agentName?: string;
+  };
+  /** The current (top-level) generation finished generating. */
+  "generation-complete": {
+    conversationId: ConversationId;
+    generation: Generation;
+  };
   /** Live STT partials, for captions and fast UX. Not persisted. */
   "partial-transcript": {
     conversationId: ConversationId;
@@ -327,6 +341,16 @@ export class Conversation {
     return entry;
   }
 
+  /**
+   * Stream the current generation's text, as produced by the orchestrator
+   * from LLM deltas. Emits the `text-delta` event so applications can render
+   * or act on partial replies.
+   */
+  pushTextDelta(text: string): void {
+    const agentName = this.state.currentGeneration?.agentName;
+    this.emit("text-delta", { conversationId: this.id, text, agentName });
+  }
+
   /** Push an agent generation into the conversation. */
   async pushGeneration(generation: Generation): Promise<void> {
     initTiming(generation);
@@ -394,6 +418,7 @@ export class Conversation {
       initTiming(generation).completedAt = Date.now();
       await this.persistence?.appendGeneration(this.id, generation);
       this.emitState();
+      this.emit("generation-complete", { conversationId: this.id, generation });
     }
   }
 

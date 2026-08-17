@@ -599,15 +599,15 @@ const LONG_JSON_PROMPT = `You are an analysis engine. Return ONLY a JSON object 
 
 {
   "summary": "one short sentence summarizing the quote (under 60 characters)",
-  "analysis": "a detailed paragraph of AT LEAST 10 sentences analyzing the quote: its linguistic structure, rhythm, and cultural significance",
+  "analysis": "a detailed paragraph of AT LEAST 15 sentences analyzing the quote: its linguistic structure, rhythm, and cultural significance",
   "topics": ["4 short topic strings"],
   "confidence": 0-100 integer
 }
 
 Task: analyze the quote "${QUOTE}"`;
 
-function bPrompt(summary: string): string {
-  return `The summary of a text is: "${summary}". Write exactly 2 sentences expanding on it.`;
+function routerPrompt(summary: string): string {
+  return `The summary of a text is: "${summary}". Reply with exactly one word: enough.`;
 }
 
 function validateLongShape(object: Record<string, unknown>): void {
@@ -618,9 +618,9 @@ function validateLongShape(object: Record<string, unknown>): void {
   if (typeof summary !== "string" || summary.length < 10) {
     throw new Error(`invalid summary: ${JSON.stringify(summary)}`);
   }
-  if (typeof analysis !== "string" || analysis.length < 300) {
+  if (typeof analysis !== "string" || analysis.length < 600) {
     throw new Error(
-      `analysis too short (${typeof analysis === "string" ? analysis.length : "?"} chars, need >= 300)`,
+      `analysis too short (${typeof analysis === "string" ? analysis.length : "?"} chars, need >= 600)`,
     );
   }
   if (
@@ -682,11 +682,11 @@ async function runSequentialArm(): Promise<SeqArmResult> {
   let bFirstToken = 0;
   for await (const event of llmB.stream({
     messages: [
-      { role: "system", content: bPrompt(summary) },
+      { role: "system", content: routerPrompt(summary) },
       { role: "user", content: "Go." },
     ],
     temperature: 0,
-    maxTokens: 200,
+    maxTokens: 10,
   })) {
     if (event.type === "error") throw event.error;
     if (event.type === "delta" && bFirstToken === 0) bFirstToken = performance.now() - aStart;
@@ -705,7 +705,8 @@ async function runSequentialArm(): Promise<SeqArmResult> {
 }
 
 interface StreamArmResult {
-  aCharsConsumed: number;
+  aCharsConsumed: number; // chars the consumer actually requested (stops at cancel)
+  providerChars: number; // chars the provider had transmitted when the consumer stopped
   aSummaryDone: number;
   bStart: number;
   bFirstToken: number;
@@ -713,21 +714,26 @@ interface StreamArmResult {
   total: number; // end-to-end = bDone
 }
 
-async function runStreamingArm(): Promise<StreamArmResult> {
+async function runStreamingArm(expectedFullChars: number): Promise<StreamArmResult> {
   const aStart = performance.now();
   const llmA = makeLlm();
 
   let summary: string | undefined;
   let aSummaryDone = 0;
   let aCharsConsumed = 0;
+  let providerChars = 0;
   let bPromise: Promise<void> | undefined;
   let bStart = 0;
   let bFirstToken = 0;
   let bDone = 0;
   let streamError: Error | undefined;
 
-  // Count A's output at the transport boundary (the semantic API below never
-  // sees chunks).
+  // Count A's output at two boundaries: `providerChars` as chunks arrive from
+  // the transport, `aCharsConsumed` as individual characters the consumer
+  // actually requests (the semantic API below never sees chunks). When the
+  // provider batches A's whole output into one SSE chunk, the two diverge:
+  // the consumer still stops at the summary boundary, but the bytes were
+  // already transmitted — a real, separate cost.
   const source = (async function* () {
     for await (const event of llmA.stream({
       messages: [
@@ -739,8 +745,11 @@ async function runStreamingArm(): Promise<StreamArmResult> {
     })) {
       if (event.type === "error") throw event.error;
       if (event.type !== "delta") continue;
-      aCharsConsumed += event.content.length;
-      yield event.content;
+      providerChars += event.content.length;
+      for (let i = 0; i < event.content.length; i++) {
+        aCharsConsumed++;
+        yield event.content[i]!;
+      }
     }
   })();
 
@@ -760,11 +769,11 @@ async function runStreamingArm(): Promise<StreamArmResult> {
       try {
         for await (const event of llmB.stream({
           messages: [
-            { role: "system", content: bPrompt(summary!) },
+            { role: "system", content: routerPrompt(summary!) },
             { role: "user", content: "Go." },
           ],
           temperature: 0,
-          maxTokens: 200,
+          maxTokens: 10,
         })) {
           if (event.type === "error") throw event.error;
           if (event.type === "delta" && bFirstToken === 0) {
@@ -783,8 +792,23 @@ async function runStreamingArm(): Promise<StreamArmResult> {
   if (summary === undefined) throw new Error("A never completed the summary field");
   if (bPromise !== undefined) await bPromise;
   if (bDone === 0) throw new Error("B never completed");
+  if (aCharsConsumed >= expectedFullChars) {
+    // B (or its network hop) was slower than A's entire stream: the consumer
+    // reached the end before the cancel landed. Retryable.
+    throw new Error(
+      `cancellation saved nothing (consumer consumed ${aCharsConsumed} of ${expectedFullChars} chars)`,
+    );
+  }
 
-  return { aCharsConsumed, aSummaryDone, bStart, bFirstToken, bDone, total: bDone };
+  return {
+    aCharsConsumed,
+    providerChars,
+    aSummaryDone,
+    bStart,
+    bFirstToken,
+    bDone,
+    total: bDone,
+  };
 }
 
 describe("StreamObject e2e (requires DEEPSEEK_API_KEY or OPENROUTER_API_KEY)", () => {
@@ -889,12 +913,16 @@ describe("StreamObject e2e (requires DEEPSEEK_API_KEY or OPENROUTER_API_KEY)", (
 
   e2e("cancelling A at the summary boundary saves tokens and shrinks the critical path", async () => {
     const seq = await withRetries("sequential", runSequentialArm);
-    const stream = await withRetries("streaming+cancel", runStreamingArm);
+    const stream = await withRetries("streaming+cancel", () =>
+      runStreamingArm(seq.value.aFullChars),
+    );
     const s = seq.value;
     const t = stream.value;
 
     // Same prompt, temperature 0: A's full output is the baseline. The
-    // streaming arm consumed less of it — the cancellation cut A short.
+    // consumer stopped requesting A's chars at the summary boundary — the
+    // cancellation cut the stream short (consumer-level, independent of how
+    // the provider chunked A's output).
     expect(t.aCharsConsumed).toBeLessThan(s.aFullChars);
     // B ran while A was still generating.
     expect(t.bStart).toBeLessThan(t.bDone);
@@ -902,15 +930,17 @@ describe("StreamObject e2e (requires DEEPSEEK_API_KEY or OPENROUTER_API_KEY)", (
     // then B) because B overlapped A's long analysis.
     expect(t.bDone).toBeLessThan(s.total);
 
-    const savedChars = s.aFullChars - t.aCharsConsumed;
-    const savedPct = ((100 * savedChars) / s.aFullChars).toFixed(0);
+    const consumerSaved = s.aFullChars - t.aCharsConsumed;
+    const providerSaved = s.aFullChars - t.providerChars;
     console.info(
       [
         "",
         "[streamobject e2e] cancellation metrics — B runs on A's summary, then cancels A:",
         `  TTF(summary) = ${t.bStart.toFixed(0)}ms | TTF(object, full run) = ${s.aDone.toFixed(0)}ms`,
-        `  producer_output_saved = ${savedChars} chars (~${savedPct}%) |` +
-          ` producer_tokens_saved ~${Math.round(s.aFullTokens * (savedChars / s.aFullChars))} of ${s.aFullTokens}`,
+        `  consumer stopped after ${t.aCharsConsumed} of ${s.aFullChars} chars` +
+          ` (saved ~${((100 * consumerSaved) / s.aFullChars).toFixed(0)}% of processing)`,
+        `  provider had transmitted ${t.providerChars} of ${s.aFullChars} chars at cancel` +
+          ` (cost saved ~${((100 * providerSaved) / s.aFullChars).toFixed(0)}% of output tokens)`,
         `  B: start ${t.bStart.toFixed(0)}ms | first token ${t.bFirstToken.toFixed(0)}ms |` +
           ` done ${t.bDone.toFixed(0)}ms | downstream_work_started_before_object = true`,
         `  critical_path = ${t.total.toFixed(0)}ms (streaming) vs ${s.total.toFixed(0)}ms (sequential)` +

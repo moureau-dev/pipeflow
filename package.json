@@ -85,6 +85,7 @@
     "test:unit": "bun test src/index.test.ts src/agents src/conversations src/providers src/persistence src/transport",
     "test:e2e": "bun test src/e2e",
     "benchmark": "bun scripts/benchmark.ts",
+    "benchmark:stream": "bun scripts/benchmark-conversation-stream.ts",
     "typecheck": "bunx tsc --noEmit"
   },
   "devDependencies": {

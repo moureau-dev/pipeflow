@@ -24,6 +24,7 @@ export { Conversations } from "./conversations";
 export type { CreateConversationOptions } from "./conversations";
 export { Orchestrator } from "./orchestration/orchestrator/index";
 export type { OrchestratorOptions } from "./orchestration/orchestrator/index";
+export { ConversationStream } from "./stream/index";
 export { Transcription, TranscriptEntry } from "./transcription/index";
 export type {
   TranscriptEntryInput,

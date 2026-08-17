@@ -1224,6 +1224,9 @@ export class Orchestrator {
     // First-token latency for the in-flight generation (agent or
     // coordination — both stream narration through here).
     this.conversation.noteTiming("firstToken");
+    // Expose the text stream semantically: applications can render or act on
+    // partial replies without waiting for the generation to complete.
+    this.conversation.pushTextDelta(delta);
     // The chunker turns the token stream into speakable chunks: strong
     // sentence boundaries flush immediately, long clauses flush at soft
     // boundaries, and nothing waits indefinitely for punctuation.

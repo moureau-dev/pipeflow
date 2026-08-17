@@ -32,6 +32,20 @@ export interface LLMRequest {
   maxTokens?: number;
 }
 
+/**
+ * Moments in the provider round trip that separate application delay from
+ * network/queue delay from model latency. The callback is invoked
+ * synchronously at each point, so `performance.now()` taken inside it is the
+ * event time.
+ *
+ * - `request-start` — immediately before the HTTP request is issued.
+ * - `headers` — the response headers arrived (2xx).
+ * - `first-chunk` — the first SSE chunk was parsed.
+ */
+export type LLMStreamTimingPoint = "request-start" | "headers" | "first-chunk";
+
+export type LLMStreamTimingCallback = (point: LLMStreamTimingPoint) => void;
+
 export type LLMEvent =
   | { type: "delta"; content: string }
   | { type: "tool_call"; id: string; name: string; arguments: string }

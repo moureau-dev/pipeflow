@@ -10,7 +10,7 @@ It handles the plumbing between audio, speech-to-text, LLMs, text-to-speech, con
 
 ## Highlights
 
-* **Small** — ~130 kB packed, one runtime dependency ([zod](https://github.com/colinhacks/zod)).
+* **Small** — ~140 kB packed, one runtime dependency ([zod](https://github.com/colinhacks/zod)).
 * **Realtime by default** — audio, transcripts, and speech stream continuously, with built-in interruption and barge-in handling.
 * **Provider-agnostic** — STT, LLM, and TTS are swappable adapters (Deepgram, DeepSeek, OpenRouter, and Kokoro today).
 * **Your backend stays yours** — tools and the audio transport are owned by your application; Pipeflow never executes your code.
@@ -339,22 +339,15 @@ await conversation.participate([
 ]);
 ```
 
-The conversation orchestrator maintains conversational state such as:
-
-* active turns
-* participant identity
-* interruptions
-* agent generations
-* transcript state
-
 In a one-to-one conversation, speech is treated as an interaction: every
 finalized participant turn produces an agent generation.
 
-Addressing works at a basic level: a turn is routed to the agent whose name
-or alias appears in the speech, falling back to the first agent in the roster.
-Floor management, multi-participant turn-taking rules, and richer addressing
-heuristics are on the roadmap. A wake word is not intended to be a
-fundamental requirement.
+Addressing works at a basic level: in a multi-agent conversation, a turn is
+routed to the agent whose name or alias appears in the speech, and unaddressed
+turns go through the built-in `understand` coordination, which may delegate to
+agents, ask the user, or answer directly. Floor management, multi-participant
+turn-taking rules, and richer addressing heuristics are on the roadmap. A wake
+word is not intended to be a fundamental requirement.
 
 </details>
 
@@ -398,8 +391,10 @@ This is useful for ordinary LLM workloads where realtime audio and conversation 
 When an agent is attached to a conversation, it can take conversational turns as part of the realtime orchestration.
 
 A conversation can coordinate **multiple agents**: `create({ agents })` accepts
-a roster, and each turn is routed to the agent whose name or alias appears in
-the speech — falling back to the first agent when none is addressed. Each
+a roster. A turn that explicitly addresses an agent by name or alias goes
+straight to that agent; unaddressed turns go through the built-in `understand`
+coordination, which decides whether to delegate, ask the user, or answer
+directly. In a single-agent conversation, every turn goes to that agent. Each
 agent keeps its own context and its own LLM; the conversation owns the shared
 runtime (STT, TTS, history, interruptions).
 
@@ -436,7 +431,10 @@ what should happen next rather than doing the work itself. It can:
 - **delegate** to one or more agents (in parallel), each with a self-contained
   prompt;
 - **pass the work to another coordination**;
-- **ask the user** a clarifying question and *suspend* until they answer;
+- **ask the user** for missing details via a structured, batched `clarify`
+  action — every missing detail goes into one question, and question rounds
+  are deterministically capped (default 2), after which reasonable
+  assumptions are stated;
 - **complete** with a direct answer.
 
 ```text
@@ -744,7 +742,7 @@ See [src/persistence/README.md](src/persistence/README.md).
 
 ### Transport
 
-Realtime communication between Pipeflow and the application using Pipeflow.
+Realtime communication between Pipeflow and the application.
 See [src/transport/README.md](src/transport/README.md).
 
 </details>
@@ -863,8 +861,10 @@ Run tests:
 bun test
 ```
 
-End-to-end tests hit the real DeepSeek API and are skipped when no key is
-available. Add a `DEEPSEEK_API_KEY` to `.env` (loaded automatically) and run:
+End-to-end tests hit the real LLM API and are skipped when no key is
+available. They prefer `OPENROUTER_API_KEY` (default model
+`google/gemini-2.5-flash-lite`, override with `LLM_MODEL`) and fall back to
+`DEEPSEEK_API_KEY`. Add either to `.env` (loaded automatically) and run:
 
 ```bash
 bun run test:e2e

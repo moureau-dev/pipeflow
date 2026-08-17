@@ -1929,6 +1929,31 @@ describe("Orchestrator", () => {
     expect(generations[0]?.text).toBe("Partial answer");
   });
 
+  test("a coordination LLM failure emits an error and finalizes the generation", async () => {
+    const harness = await setupRoster({
+      coordinatorScript: async function* () {
+        yield { type: "delta", content: "Let me check." };
+        throw new Error("coordinator down");
+      },
+      scripts: {},
+    });
+    const errors: Error[] = [];
+    harness.conversation.on("error", (payload) => errors.push(payload.error));
+
+    harness.conversation.listen({ userId: "alice", audio: new Uint8Array([1]) });
+    harness.stt.sessions.at(-1)!.emitFinal("I need help with my flights.");
+    await harness.orchestrator.whenIdle();
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]?.message).toBe("coordinator down");
+
+    // An errored coordination run must not leave a dangling "streaming"
+    // generation behind — the persisted record is finalized like the agent
+    // path does.
+    const generations = await harness.persistence.listGenerations("conv-1");
+    expect(generations[0]?.status).toBe("completed");
+  });
+
   test("an STT failure emits an error event", async () => {
     const harness = await setup({ script: respond("Ok!") });
     const errors: Error[] = [];

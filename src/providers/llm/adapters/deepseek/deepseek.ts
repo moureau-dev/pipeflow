@@ -1,4 +1,4 @@
-import type { LLM, LLMEvent, LLMRequest } from "../../types";
+import type { LLM, LLMEvent, LLMRequest, LLMStreamTimingCallback } from "../../types";
 import type { FetchLike } from "../../../shared";
 import { openAICompatibleStream } from "../openai-compatible";
 
@@ -10,6 +10,8 @@ export interface DeepSeekOptions {
   baseUrl?: string;
   /** Injectable fetch implementation, mainly for tests. */
   fetch?: FetchLike;
+  /** Provider-timeline hook: request-start / headers / first-chunk. */
+  onTiming?: LLMStreamTimingCallback;
 }
 
 /**
@@ -20,6 +22,7 @@ export class DeepSeekLLM implements LLM {
   private readonly model: string;
   private readonly baseUrl: string;
   private readonly fetchImpl: FetchLike;
+  private readonly onTiming: LLMStreamTimingCallback | undefined;
   private readonly streams = new Set<AbortController>();
 
   constructor(options: DeepSeekOptions) {
@@ -30,6 +33,7 @@ export class DeepSeekLLM implements LLM {
     this.model = options.model ?? "deepseek-chat";
     this.baseUrl = (options.baseUrl ?? "https://api.deepseek.com").replace(/\/+$/, "");
     this.fetchImpl = options.fetch ?? fetch;
+    this.onTiming = options.onTiming;
   }
 
   /** Cancel every in-flight stream (parallel sub-generations included). */
@@ -55,6 +59,7 @@ export class DeepSeekLLM implements LLM {
         // adapter behaves uniformly on deepseek-chat.
         extraBody: { thinking: { type: "disabled" } },
         label: "DeepSeek",
+        onTiming: this.onTiming,
       });
     } finally {
       this.streams.delete(controller);

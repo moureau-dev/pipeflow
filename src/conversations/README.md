@@ -16,8 +16,9 @@ conversations/
 ## Concepts
 
 - **Conversation** — lifecycle (`start`/`stop`), participants, `listen()`,
-  events. `start()` attaches the orchestrator when an STT provider is
-  configured. See [conversation/README.md](./conversation/README.md).
+  events. `start()` attaches the orchestrator whenever there is realtime
+  work: an STT provider for voice, or agents with an LLM for text turns. See
+  [conversation/README.md](./conversation/README.md).
 - **Transcription** — ordered transcript entries with speaker attribution
   (`participant` | `agent`). See
   [transcription/README.md](./transcription/README.md).

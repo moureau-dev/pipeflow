@@ -1,4 +1,4 @@
-import type { LLMEvent, LLMRequest } from "../types";
+import type { LLMEvent, LLMRequest, LLMStreamTimingCallback } from "../types";
 import type { FetchLike } from "../../shared";
 
 interface DeltaToolCall {
@@ -29,6 +29,8 @@ export interface OpenAICompatibleStreamParams {
   extraBody?: Record<string, unknown>;
   /** Provider name used in error messages. */
   label: string;
+  /** Optional provider-timeline hook (see `LLMStreamTimingPoint`). */
+  onTiming?: LLMStreamTimingCallback;
 }
 
 /**
@@ -39,9 +41,10 @@ export interface OpenAICompatibleStreamParams {
 export async function* openAICompatibleStream(
   params: OpenAICompatibleStreamParams,
 ): AsyncGenerator<LLMEvent> {
-  const { baseUrl, apiKey, model, fetchImpl, request, signal, extraHeaders, extraBody, label } =
+  const { baseUrl, apiKey, model, fetchImpl, request, signal, extraHeaders, extraBody, label, onTiming } =
     params;
 
+  onTiming?.("request-start");
   const response = await fetchImpl(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -86,12 +89,13 @@ export async function* openAICompatibleStream(
   if (!response.body) {
     throw new Error(`${label} returned an empty body`);
   }
+  onTiming?.("headers");
 
   // Tool calls arrive fragmented across chunks and are reassembled by
   // index before being emitted once the stream signals `tool_calls`.
   const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
 
-  for await (const chunk of parseSSE(response.body, signal)) {
+  for await (const chunk of parseSSE(response.body, signal, onTiming)) {
     const choice = chunk.choices?.[0];
     if (!choice) continue;
 
@@ -120,6 +124,20 @@ export async function* openAICompatibleStream(
       }
       break;
     }
+    // Some providers (e.g. gemini models via OpenRouter) return HTTP 200 with
+    // an empty body and finish_reason "error"/"content_filter" instead of a
+    // real failure. Surface it as an error event rather than silently
+    // completing with an empty generation.
+    if (choice.finish_reason === "error" || choice.finish_reason === "content_filter") {
+      yield {
+        type: "error",
+        error: new Error(
+          `${label} stream finished with "${choice.finish_reason}"` +
+            (toolCalls.size > 0 ? "" : " and produced no output"),
+        ),
+      };
+      break;
+    }
     if (choice.finish_reason === "stop") {
       break;
     }
@@ -136,10 +154,12 @@ export async function* openAICompatibleStream(
 async function* parseSSE(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
+  onTiming?: LLMStreamTimingCallback,
 ): AsyncGenerator<ChatCompletionChunk> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let firstChunkEmitted = false;
 
   while (true) {
     if (signal.aborted) {
@@ -156,6 +176,10 @@ async function* parseSSE(
         if (!line.startsWith("data:")) continue;
         const data = line.slice(5).trim();
         if (data === "[DONE]") return;
+        if (!firstChunkEmitted) {
+          firstChunkEmitted = true;
+          onTiming?.("first-chunk");
+        }
         try {
           yield JSON.parse(data) as ChatCompletionChunk;
         } catch {

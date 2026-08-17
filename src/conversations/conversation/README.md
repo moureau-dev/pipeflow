@@ -19,7 +19,8 @@ await conversation.stop();
 
 - `create()` makes the persistent record; `start()` attaches the orchestrator
   (STT → routing → LLM → TTS). Creation and execution are deliberately
-  separate.
+  separate. The orchestrator attaches whenever there is realtime work: an STT
+  provider for voice, or agents with an LLM for text turns (`send()`).
 - `stop()` finalizes the session, cancels in-flight generations (including
   sub-generations), and persists the end time.
 - `interrupt()` is a semantic guarantee, not a performance hint: it stops the

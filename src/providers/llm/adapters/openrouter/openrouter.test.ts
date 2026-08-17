@@ -58,6 +58,37 @@ describe("OpenRouterLLM", () => {
     ]);
   });
 
+  test("surfaces an empty 200 with finish_reason error/content_filter as an error event", async () => {
+    // Providers such as gemini on OpenRouter occasionally return HTTP 200
+    // with no output and finish_reason "error" — a silent empty completion
+    // used to be emitted instead of surfacing the failure.
+    for (const finishReason of ["error", "content_filter"]) {
+      const llm = new OpenRouterLLM({
+        apiKey: "test-key",
+        fetch: async () =>
+          sseResponse(
+            sseFrame(
+              JSON.stringify({
+                choices: [{ delta: { content: "" }, finish_reason: finishReason }],
+              }),
+            ),
+          ),
+      });
+
+      const events = [];
+      for await (const event of llm.stream(basicRequest)) {
+        events.push(event);
+      }
+
+      expect(events).toHaveLength(2);
+      expect(events[0]).toMatchObject({ type: "error" });
+      expect(events[1]).toEqual({ type: "done" });
+      expect((events[0] as { error: Error }).error.message).toMatch(
+        new RegExp(`finished with "${finishReason}" and produced no output`),
+      );
+    }
+  });
+
   test("sends the request with auth, default model, and stream flags", async () => {
     let capturedUrl = "";
     let capturedInit: RequestInit | undefined;

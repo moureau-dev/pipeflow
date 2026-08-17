@@ -1,4 +1,4 @@
-import type { LLM, LLMEvent, LLMRequest } from "../../types";
+import type { LLM, LLMEvent, LLMRequest, LLMStreamTimingCallback } from "../../types";
 import type { FetchLike } from "../../../shared";
 import { openAICompatibleStream } from "../openai-compatible";
 
@@ -19,6 +19,8 @@ export interface OpenRouterOptions {
   appUrl?: string;
   /** Injectable fetch implementation, mainly for tests. */
   fetch?: FetchLike;
+  /** Provider-timeline hook: request-start / headers / first-chunk. */
+  onTiming?: LLMStreamTimingCallback;
 }
 
 /**
@@ -34,6 +36,7 @@ export class OpenRouterLLM implements LLM {
   private readonly baseUrl: string;
   private readonly appUrl: string;
   private readonly fetchImpl: FetchLike;
+  private readonly onTiming: LLMStreamTimingCallback | undefined;
   private readonly streams = new Set<AbortController>();
 
   constructor(options: OpenRouterOptions) {
@@ -45,6 +48,7 @@ export class OpenRouterLLM implements LLM {
     this.baseUrl = (options.baseUrl ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
     this.appUrl = options.appUrl ?? "https://moureau.dev";
     this.fetchImpl = options.fetch ?? fetch;
+    this.onTiming = options.onTiming;
   }
 
   /** Cancel every in-flight stream (parallel sub-generations included). */
@@ -73,6 +77,7 @@ export class OpenRouterLLM implements LLM {
           "x-title": "pipeflow",
         },
         label: "OpenRouter",
+        onTiming: this.onTiming,
       });
     } finally {
       this.streams.delete(controller);

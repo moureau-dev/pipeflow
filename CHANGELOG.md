@@ -10,6 +10,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - **OpenRouter LLM adapter** — `OpenRouterLLM` routes through any model on the OpenRouter marketplace over a shared OpenAI-compatible streaming engine (now also backing DeepSeek), with app attribution headers (`X-Title: pipeflow`, `HTTP-Referer` defaulting to `https://moureau.dev`).
+- **Provider timeline hook** — both LLM adapters accept an `onTiming` callback (`request-start` / `headers` / `first-chunk`) so application delay, network/queue delay, and model TTFT can be separated (`bun scripts/latency-profile.ts` now reports the decomposition).
+- **Structured clarification** — the `delegate` tool gains a `clarify` action: the coordination declares the missing details in a `missing` array, and the framework renders and speaks one batched question for all of them (instead of one question per missing detail, model-permitting).
+- **Deterministic question budget** — `clarify` and `user` question rounds are capped per coordination run at `maxQuestionRounds` (default 2, carried across suspensions); past the cap the coordination states assumptions and completes. The real-model clarify e2e went from 24.6s / 8 generations (and 60s+ timeouts) to ~5s / bounded rounds.
+
+### Fixed
+
+- **Provider failures surface as errors** — the OpenAI-compatible streaming engine now emits an `error` event when a provider returns HTTP 200 with `finish_reason: "error"`/`"content_filter"` (e.g. gemini models via OpenRouter), instead of silently completing with an empty generation.
+- **Errored coordinations finalize their generation** — an LLM failure inside a coordination run previously left a dangling `streaming` generation in persistence; it is now completed (with the error surfaced via the `error` event), matching the agent path.
+- **Clarify e2e no longer hard-fails on slow models** — the chain test reports a stall gracefully instead of timing out the whole suite.
 
 ## [0.0.1] - 2026-08-16
 
@@ -28,11 +37,11 @@ Initial release: a realtime voice infrastructure SDK for TypeScript.
 - **Providers** — vendor-independent LLM/STT/TTS interfaces, plus adapters for DeepSeek (SSE streaming with tool calls), Deepgram (WebSocket streaming with partials/finals), and Kokoro (chunked audio).
 - **Persistence** — provider-independent storage interface with in-memory and SQLite (`bun:sqlite`) adapters, backed by a shared contract test suite.
 - **Transport** — typed message protocol with an in-memory paired transport.
-- **Packaging** — dual ESM/CJS builds, TypeScript declarations, subpath exports (`@moureau/pipeflow/providers`, `@moureau/pipeflow/persistence`, `@moureau/pipeflow/transport`), zero runtime dependencies, and a GitHub Actions publish workflow.
-- **Testing** — a 196-test suite covering the full pipeline with fake providers: streaming, tool pause/resume and timeouts, interruption and barge-in, multi-turn clarification, persistence contracts, and provider adapters.
+- **Packaging** — dual ESM/CJS builds, TypeScript declarations, subpath exports (`@moureau/pipeflow/providers`, `@moureau/pipeflow/persistence`, `@moureau/pipeflow/transport`), one runtime dependency (zod), and a GitHub Actions publish workflow.
+- **Testing** — a 200+ test suite covering the full pipeline with fake providers: streaming, tool pause/resume and timeouts, interruption and barge-in, multi-turn clarification, persistence contracts, and provider adapters.
 
 ### Known limitations
 
 - The SQLite adapter uses `bun:sqlite` and requires the Bun runtime; Node consumers should use the in-memory adapter.
-- Multi-participant floor management and addressing (determining when an agent is being spoken to) are planned but not yet implemented.
+- Multi-participant floor management and richer addressing heuristics are planned but not yet implemented; basic addressing by agent name/alias is implemented.
 - The package is not yet published to npm.

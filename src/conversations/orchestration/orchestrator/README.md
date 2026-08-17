@@ -10,10 +10,10 @@ audio-in ──► STT ──► turn ──► router ──► agent / coordin
                                                       └─► tool-call ──► app resolves ──► resume
 ```
 
-`Conversation.start()` attaches an orchestrator automatically when an STT
-provider is configured, so most applications never construct one directly. The
-class is exported for power users via
-`@moureau/pipeflow/conversations/orchestration/orchestrator`.
+`Conversation.start()` attaches an orchestrator automatically (with an STT
+provider for voice, or agents with an LLM for text turns), so most
+applications never construct one directly. The class is exported for power
+users via `@moureau/pipeflow/conversations/orchestration/orchestrator`.
 
 ## Routing
 

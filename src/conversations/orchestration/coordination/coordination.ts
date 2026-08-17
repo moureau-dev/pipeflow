@@ -27,6 +27,7 @@ export interface DelegationResult {
 export type DelegateAction =
   | { action: "agents"; tasks: DelegatedTask[] }
   | { action: "coordination"; coordination: string; input?: unknown }
+  | { action: "clarify"; missing: string[] }
   | { action: "user"; question: string }
   | { action: "complete"; output: string };
 
@@ -72,6 +73,13 @@ export interface CoordinationOptions {
   maxTokens?: number;
   /** Hard wall-clock limit for a single run (including suspensions). */
   maxDurationMs?: number;
+  /**
+   * Deterministic cap on user-question rounds per run (both the structured
+   * `clarify` action and open-ended `user` questions, across suspensions).
+   * Once exhausted, the coordination is told to state assumptions and
+   * complete instead of asking again. Defaults to 2.
+   */
+  maxQuestionRounds?: number;
 }
 
 /**
@@ -81,10 +89,20 @@ export interface CoordinationOptions {
 export type CoordinationRegistration = Omit<CoordinationOptions, "name">;
 
 /**
+ * Render a batched clarification question from the missing details, so the
+ * wording is deterministic regardless of how the model phrases the labels.
+ */
+export function renderClarifyQuestion(missing: string[]): string {
+  const list = new Intl.ListFormat("en", { style: "long", type: "conjunction" }).format(missing);
+  return `Before I continue, could you tell me: ${list}?`;
+}
+
+/**
  * The system prompt for a `clarify` coordination: a generic,
  * domain-agnostic information-acquisition unit. It turns an underspecified
- * request into a clear one by asking the user one question at a time and
- * reassessing after each answer. Register it alongside `understand`:
+ * request into a clear one by asking the user for missing details via the
+ * structured `clarify` action (batched), with a hard two-round cap enforced
+ * by the runtime. Register it alongside `understand`:
  *
  * ```ts
  * coordinations: { clarify: { prompt: buildClarifyPrompt() } }
@@ -96,10 +114,10 @@ export function buildClarifyPrompt(): string {
 Your job is to turn an underspecified request into a sufficiently clear one by asking the user for whatever is missing. You know nothing about the request's domain — you only notice missing details and ask for them.
 
 Use the delegate tool:
-- action "user": ask about the missing details. When several are obviously needed, batch up to 1-3 related questions into one turn (e.g. destination, date, and passenger count) instead of asking one at a time.
+- action "clarify": list every missing detail in the "missing" array in one call — never split related details across multiple calls, and never ask one question at a time.
 - action "complete": finish once the request is clear enough to act on, restating it precisely including every answer the user gave.
 
-After each answer, reassess: is the request now clear enough to act on? If yes, complete. If not, ask the next missing details. Never delegate to agents — your job is only to gather information.`;
+After each answer, reassess: is the request now clear enough to act on? If yes, complete. If not, call "clarify" again with the remaining missing details. The runtime stops you after two clarify rounds; if you are still missing details then, state reasonable assumptions and complete. Never delegate to agents — your job is only to gather information.`;
 }
 
 /**
@@ -111,6 +129,8 @@ export interface CoordinationState {
   startedAt: number;
   /** Everything the coordination has spoken so far, for the final record. */
   narration: string;
+  /** How many user-question rounds this run has used (across suspensions). */
+  questionRounds: number;
   /** Tool call id awaiting a sub-coordination result, for resume replies. */
   pendingToolCallId?: string;
 }
@@ -157,8 +177,8 @@ export class CoordinationBudgetExceeded extends Error {
 const DELEGATE_DESCRIPTION =
   "Decide what should happen next in order to produce the desired result. " +
   "You may run one or more agents (each with a self-contained prompt), pass the work to " +
-  "another coordination, ask the user for missing information, or complete with the final " +
-  "spoken answer. Only ever take one action per call.";
+  "another coordination, ask the user for missing information (batched into one call), or " +
+  "complete with the final spoken answer. Only ever take one action per call.";
 
 /** Non-empty zod enum, or a plain string when there are no targets. */
 function targetsEnum(targets: string[]): z.ZodType<string> {
@@ -198,6 +218,13 @@ function delegateActionSchema(
       input: z.unknown().describe("Input for the delegated coordination.").optional(),
     }),
     z.object({
+      action: z.literal("clarify"),
+      missing: z
+        .array(z.string().trim().min(1, "a missing detail is required"))
+        .min(1, "at least one missing detail is required")
+        .describe("The missing details to ask the user for, batched into one turn."),
+    }),
+    z.object({
       action: z.literal("user"),
       question: z.string().trim().min(1, "a question is required").describe("Clarifying question for the user."),
     }),
@@ -222,7 +249,7 @@ export function delegateToolDefinition(
   const coordinationTargets = coordinations.map((coordination) => coordination.name);
   const parameters = z.object({
     action: z
-      .enum(["agents", "coordination", "user", "complete"])
+      .enum(["agents", "coordination", "clarify", "user", "complete"])
       .describe("What to do next."),
     tasks: z
       .array(
@@ -239,6 +266,11 @@ export function delegateToolDefinition(
     input: z
       .unknown()
       .describe("Input for the delegated coordination (action 'coordination').")
+      .optional(),
+    missing: z
+      .array(z.string().trim().min(1, "a missing detail is required"))
+      .min(1, "at least one missing detail is required")
+      .describe("The missing details to ask the user for (action 'clarify'), batched into one turn.")
       .optional(),
     question: z
       .string()
@@ -295,6 +327,7 @@ export class Coordination {
   readonly prompt: string;
   readonly maxTokens: number | undefined;
   readonly maxDurationMs: number | undefined;
+  readonly maxQuestionRounds: number;
   private readonly runtime: CoordinationRuntime;
   private readonly llm: LLM;
   private cachedToolDefinition: LLMToolDefinition | null = null;
@@ -308,6 +341,7 @@ export class Coordination {
     this.prompt = options.prompt?.trim() ?? "";
     this.maxTokens = options.maxTokens;
     this.maxDurationMs = options.maxDurationMs;
+    this.maxQuestionRounds = options.maxQuestionRounds ?? 2;
     this.runtime = runtime;
     this.llm = options.llm ?? runtime.llm;
   }
@@ -353,6 +387,7 @@ export class Coordination {
       messages: [],
       startedAt: Date.now(),
       narration: "",
+      questionRounds: 0,
     };
     if (this.prompt) {
       state.messages.push({ role: "system", name: this.name, content: this.prompt });
@@ -505,11 +540,48 @@ export class Coordination {
               }
               break;
             }
+            case "clarify": {
+              // Structured, batched clarification: the model declares which
+              // details are missing; the framework renders and speaks the
+              // question so batching and the round cap are deterministic.
+              if (state.questionRounds >= this.maxQuestionRounds) {
+                state.messages.push({
+                  role: "tool",
+                  toolCallId: call.id,
+                  name: "delegate",
+                  content: JSON.stringify({
+                    error: `question budget exceeded (max ${this.maxQuestionRounds} rounds) — state reasonable assumptions and complete`,
+                  }),
+                });
+                continue;
+              }
+              state.questionRounds++;
+              const question = renderClarifyQuestion(action.missing);
+              this.runtime.speak(question);
+              state.messages.push({
+                role: "tool",
+                toolCallId: call.id,
+                name: "delegate",
+                content: JSON.stringify({ action: "clarify", missing: action.missing }),
+              });
+              await this.runtime.askUser({ coordination: this, state }, question);
+              throw new Error("unreachable");
+            }
             case "user": {
-              // The question was (typically) narrated; park the whole stack.
-              // The assistant tool call needs a matching tool response in the
-              // parked state — providers reject assistant tool_calls that are
-              // never answered, and the user's answer resumes the loop.
+              // Open-ended questions count against the same deterministic
+              // question-round budget as structured clarification.
+              if (state.questionRounds >= this.maxQuestionRounds) {
+                state.messages.push({
+                  role: "tool",
+                  toolCallId: call.id,
+                  name: "delegate",
+                  content: JSON.stringify({
+                    error: `question budget exceeded (max ${this.maxQuestionRounds} rounds) — state reasonable assumptions and complete`,
+                  }),
+                });
+                continue;
+              }
+              state.questionRounds++;
               state.messages.push({
                 role: "tool",
                 toolCallId: call.id,

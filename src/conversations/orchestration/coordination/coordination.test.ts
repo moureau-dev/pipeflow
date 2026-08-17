@@ -120,6 +120,7 @@ describe("delegate tool contract", () => {
     expect(params.properties.action.enum).toEqual([
       "agents",
       "coordination",
+      "clarify",
       "user",
       "complete",
     ]);
@@ -186,6 +187,17 @@ describe("delegate tool contract", () => {
         coordinations,
       ),
     ).toEqual({ action: "user", question: "Which city?" });
+    // Clarify batches the missing details; entries are trimmed.
+    expect(
+      parseDelegateAction(
+        JSON.stringify({
+          action: "clarify",
+          missing: [" departure ", "destination", "date"],
+        }),
+        agents,
+        coordinations,
+      ),
+    ).toEqual({ action: "clarify", missing: ["departure", "destination", "date"] });
     expect(
       parseDelegateAction(
         JSON.stringify({ action: "complete", output: "Done." }),
@@ -355,6 +367,125 @@ describe("Coordination", () => {
       role: "assistant",
       toolCalls: [{ id: "call_1", name: "delegate" }],
     });
+  });
+
+  test("clarify suspends with a rendered batched question and speaks it", async () => {
+    const runtime = new MockRuntime();
+    const llm = new FakeLLM(async function* () {
+      yield {
+        type: "tool_call",
+        id: "call_c",
+        name: "delegate",
+        arguments: JSON.stringify({
+          action: "clarify",
+          missing: ["departure city", "destination", "date", "number of passengers"],
+        }),
+      };
+      yield { type: "done" };
+    });
+    const coordination = makeCoordination(runtime, { llm });
+
+    const suspension = await captureSuspension(coordination.run("Book a flight."));
+
+    // The framework renders the question from the missing list (one batched
+    // round-trip, not one question per missing detail) and speaks it.
+    expect(suspension.question).toBe(
+      "Before I continue, could you tell me: departure city, destination, date, and number of passengers?",
+    );
+    expect(runtime.spoken).toContain(suspension.question);
+    // The parked state carries the structured clarify tool response.
+    expect(suspension.frames[0]!.state.messages.at(-1)).toEqual({
+      role: "tool",
+      toolCallId: "call_c",
+      name: "delegate",
+      content: JSON.stringify({
+        action: "clarify",
+        missing: ["departure city", "destination", "date", "number of passengers"],
+      }),
+    });
+  });
+
+  test("clarify rounds are capped deterministically, then the coordination completes with assumptions", async () => {
+    let calls = 0;
+    const runtime = new MockRuntime();
+    const llm = new FakeLLM(async function* () {
+      const n = calls++;
+      if (n === 0 || n === 1) {
+        yield {
+          type: "tool_call",
+          id: `call_${n}`,
+          name: "delegate",
+          arguments: JSON.stringify({ action: "clarify", missing: ["the date"] }),
+        };
+        yield { type: "done" };
+        return;
+      }
+      yield { type: "delta", content: "I'll assume tomorrow. " };
+      yield {
+        type: "tool_call",
+        id: "call_done",
+        name: "delegate",
+        arguments: JSON.stringify({ action: "complete", output: "Booked for tomorrow." }),
+      };
+      yield { type: "done" };
+    });
+    // Cap at one round: the first clarify suspends, the second is refused.
+    const coordination = makeCoordination(runtime, { llm, maxQuestionRounds: 1 });
+
+    const suspension = await captureSuspension(coordination.run("Book a flight."));
+    const state = suspension.frames[0]!.state;
+    const output = await coordination.resume(state, "Friday.");
+
+    expect(output).toBe("I'll assume tomorrow. Booked for tomorrow.");
+    // Only one suspension happened — the second clarify call was answered with
+    // a budget error tool message instead of parking again.
+    const secondToolMessage = llm.requests[2]!.messages
+      .filter((m) => m.role === "tool" && m.name === "delegate")
+      .at(-1);
+    expect(JSON.parse(secondToolMessage?.content ?? "{}")).toMatchObject({
+      error: expect.stringContaining("question budget exceeded"),
+    });
+    expect(llm.requests.length).toBe(3); // clarify, resume, complete
+  });
+
+  test("open-ended user questions count against the same question-round budget", async () => {
+    let calls = 0;
+    const runtime = new MockRuntime();
+    const llm = new FakeLLM(async function* () {
+      const n = calls++;
+      if (n === 0 || n === 1) {
+        yield {
+          type: "tool_call",
+          id: `call_${n}`,
+          name: "delegate",
+          arguments: JSON.stringify({ action: "user", question: "Which city?" }),
+        };
+        yield { type: "done" };
+        return;
+      }
+      yield {
+        type: "tool_call",
+        id: "call_done",
+        name: "delegate",
+        arguments: JSON.stringify({ action: "complete", output: "Paris." }),
+      };
+      yield { type: "done" };
+    });
+    const coordination = makeCoordination(runtime, { llm, maxQuestionRounds: 1 });
+
+    const suspension = await captureSuspension(coordination.run("Book a flight."));
+    const state = suspension.frames[0]!.state;
+    const output = await coordination.resume(state, "London.");
+
+    expect(output).toBe("Paris.");
+    // The second user question was refused with a budget error, not parked.
+    const lastToolMessage = llm.requests[2]!.messages
+      .filter((m) => m.role === "tool" && m.name === "delegate")
+      .at(-1);
+    expect(JSON.parse(lastToolMessage?.content ?? "{}")).toMatchObject({
+      error: expect.stringContaining("question budget exceeded"),
+    });
+    expect(llm.requests.length).toBe(3); // question, resume, complete
   });
 
   test("delegates to a registered coordination and merges its output", async () => {

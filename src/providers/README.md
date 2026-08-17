@@ -26,6 +26,10 @@ interface LLM {
 arguments), `done`, or `error` events. Transport failures are thrown from the
 generator. Adapters: `DeepSeekLLM`, `OpenRouterLLM` (both OpenAI-compatible).
 
+Both adapters accept an optional `onTiming` callback that fires at
+`request-start`, `headers`, and `first-chunk` — enough to split application
+delay, network/queue delay, and model TTFT apart when profiling voice latency:
+
 ## STT
 
 ```ts

@@ -171,22 +171,38 @@ const scenarios: Array<{
       tools: [REAL_DELEGATE],
     }),
     diagnostics: () =>
-      `~8KB history, real delegate schema (${JSON.stringify(REAL_DELEGATE.parameters).length} bytes)`,
+      `~8KB history (~${Math.round(8_000 / 160)} turns), real delegate schema`,
   },
-  // B: the same workload with the orchestrator's history window applied —
-  // the whole point of windowing is keeping requests in the fast regime.
-  {
-    name: "coordination windowed",
-    build: () => ({
+  // The window-size frontier: same workload, different window policies.
+  ...([
+    ["window 3t/2k", 3, 2_000],
+    ["window 5t/4k", 5, 4_000],
+    ["window 10t/8k", 10, 8_000],
+  ] as Array<[string, number, number]>).map(([name, maxTurns, maxChars]) => ({
+    name,
+    build: (): LLMRequest => ({
       messages: [
         { role: "system", content: COORDINATOR_PROMPT },
-        ...windowHistory(realisticHistory(8_000), { maxTurns: 5, maxChars: 4_000 }),
+        ...windowHistory(realisticHistory(8_000), { maxTurns, maxChars }),
       ],
       tools: [REAL_DELEGATE],
     }),
-    diagnostics: () =>
-      `windowed (5 turns / 4k chars) ${JSON.stringify(REAL_DELEGATE.parameters).length}-byte delegate schema`,
-  },
+    diagnostics: () => `windowed (${maxTurns} turns / ${(maxChars / 1000).toFixed(1)}k chars`,
+  })),
+  // Provider-token threshold sweep: history sized to approximate each input-
+  // token target (chars ≈ tokens × ~2.4 for this request shape), to find the
+  // nonlinear latency knee between ~1K and ~3K provider tokens.
+  ...([1_000, 1_500, 2_000, 2_500, 3_000] as number[]).map((targetTokens) => ({
+    name: `tokens ~${(targetTokens / 1000).toFixed(1)}k`,
+    build: (): LLMRequest => ({
+      messages: [
+        { role: "system", content: COORDINATOR_PROMPT },
+        ...realisticHistory(Math.round(targetTokens * 2.4)),
+      ],
+      tools: [REAL_DELEGATE],
+    }),
+    diagnostics: () => `history sized to ≈${(targetTokens / 1000).toFixed(1)}k provider tokens`,
+  })),
 ];
 
 // ---------------------------------------------------------------------------
@@ -204,6 +220,8 @@ interface Run {
   usage?: LLMUsage;
   /** Locally estimated prompt tokens (chars / 4), for discrepancy checks. */
   estimate?: number;
+  /** A tool call arrived whose arguments were not a valid delegate action. */
+  invalidToolCall?: boolean;
 }
 
 /** Rough local prompt-token estimate from the request shape. */
@@ -223,6 +241,8 @@ function estimatePromptTokens(request: LLMRequest): number {
 let currentRun: Run | null = null;
 let currentRunStart = 0;
 
+const DELEGATE_ACTIONS = ["agents", "coordination", "clarify", "user", "complete"];
+
 async function runOnce(llm: LLM, request: LLMRequest): Promise<Run> {
   const start = performance.now();
   const run: Run = { estimate: estimatePromptTokens(request) };
@@ -235,6 +255,17 @@ async function runOnce(llm: LLM, request: LLMRequest): Promise<Run> {
         run.firstDelta = at;
       } else if (event.type === "tool_call" && run.toolCall === undefined) {
         run.toolCall = at;
+        try {
+          const parsed = JSON.parse(event.arguments) as { action?: unknown };
+          if (
+            typeof parsed?.action !== "string" ||
+            !DELEGATE_ACTIONS.includes(parsed.action)
+          ) {
+            run.invalidToolCall = true;
+          }
+        } catch {
+          run.invalidToolCall = true;
+        }
       } else if (event.type === "done") {
         run.done = at;
       }
@@ -366,8 +397,14 @@ async function probeThinking(): Promise<void> {
 // ---------------------------------------------------------------------------
 
 const llm = makeLlm();
+// Optional scenario filter: SCENARIOS=tokens runs only names containing
+// "tokens" (e.g. the threshold sweep) instead of the whole profile.
+const scenarioFilter = process.env.SCENARIOS;
+const activeScenarios = scenarioFilter
+  ? scenarios.filter((scenario) => scenario.name.includes(scenarioFilter))
+  : scenarios;
 console.log(`latency profile: ${RUNS} runs, ${LABEL}`);
-for (const scenario of scenarios) {
+for (const scenario of activeScenarios) {
   const request = scenario.build();
   console.log(`\n${scenario.name} — ${scenario.diagnostics()}`);
   console.log(`${'metric'.padEnd(12)} ${'p50'.padStart(8)} ${'p90'.padStart(8)} ${'p95'.padStart(8)} ${'min'.padStart(8)} ${'max'.padStart(8)}`);
@@ -381,6 +418,7 @@ for (const scenario of scenarios) {
   const errors: string[] = [];
   const usages: LLMUsage[] = [];
   const estimates: number[] = [];
+  let invalidToolCalls = 0;
   for (let i = 0; i < RUNS; i++) {
     const run = await runOnce(llm, request);
     deltas.push(run.firstDelta);
@@ -392,11 +430,15 @@ for (const scenario of scenarios) {
     if (run.error) errors.push(run.error);
     if (run.usage) usages.push(run.usage);
     if (run.estimate !== undefined) estimates.push(run.estimate);
+    if (run.invalidToolCall) invalidToolCalls++;
     process.stdout.write(`  run ${i + 1}/${RUNS}…`);
   }
   console.log();
   if (errors.length > 0) {
     console.log(`  ${errors.length}/${RUNS} runs errored (first: ${errors[0]!.slice(0, 120)})`);
+  }
+  if (invalidToolCalls > 0) {
+    console.log(`  ${invalidToolCalls}/${RUNS} runs produced an invalid delegate tool call`);
   }
 
   // Tokens: provider-reported vs local estimate. The gap reveals system

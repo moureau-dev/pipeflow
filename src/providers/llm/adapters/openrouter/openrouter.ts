@@ -2,33 +2,48 @@ import type { LLM, LLMEvent, LLMRequest } from "../../types";
 import type { FetchLike } from "../../../shared";
 import { openAICompatibleStream } from "../openai-compatible";
 
-export interface DeepSeekOptions {
+export interface OpenRouterOptions {
   apiKey: string;
-  /** Defaults to `deepseek-chat`. */
+  /**
+   * Any model hosted on OpenRouter, e.g. `anthropic/claude-sonnet-4`.
+   * Defaults to `openrouter/auto`, which routes the request to the best
+   * available model for its shape.
+   */
   model?: string;
-  /** Defaults to `https://api.deepseek.com`. */
+  /** Defaults to `https://openrouter.ai/api/v1`. */
   baseUrl?: string;
+  /**
+   * The site that credits the app on OpenRouter's leaderboard via
+   * `HTTP-Referer`. Defaults to `https://moureau.dev`.
+   */
+  appUrl?: string;
   /** Injectable fetch implementation, mainly for tests. */
   fetch?: FetchLike;
 }
 
 /**
- * DeepSeek LLM adapter (OpenAI-compatible chat completions over SSE).
+ * OpenRouter LLM adapter (OpenAI-compatible chat completions over SSE).
+ *
+ * OpenRouter is a gateway: one API key and one wire format for hundreds of
+ * models from different vendors, so this adapter is a thin wrapper around
+ * the shared OpenAI-compatible streaming engine.
  */
-export class DeepSeekLLM implements LLM {
+export class OpenRouterLLM implements LLM {
   private readonly apiKey: string;
   private readonly model: string;
   private readonly baseUrl: string;
+  private readonly appUrl: string;
   private readonly fetchImpl: FetchLike;
   private readonly streams = new Set<AbortController>();
 
-  constructor(options: DeepSeekOptions) {
+  constructor(options: OpenRouterOptions) {
     if (!options.apiKey) {
-      throw new Error("DeepSeekLLM requires an apiKey");
+      throw new Error("OpenRouterLLM requires an apiKey");
     }
     this.apiKey = options.apiKey;
-    this.model = options.model ?? "deepseek-chat";
-    this.baseUrl = (options.baseUrl ?? "https://api.deepseek.com").replace(/\/+$/, "");
+    this.model = options.model ?? "openrouter/auto";
+    this.baseUrl = (options.baseUrl ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
+    this.appUrl = options.appUrl ?? "https://moureau.dev";
     this.fetchImpl = options.fetch ?? fetch;
   }
 
@@ -44,6 +59,8 @@ export class DeepSeekLLM implements LLM {
     this.streams.add(controller);
 
     try {
+      // OpenRouter credits app usage on its leaderboard from HTTP-Referer
+      // (defaulting to moureau.dev) and X-Title (always `pipeflow`).
       yield* openAICompatibleStream({
         baseUrl: this.baseUrl,
         apiKey: this.apiKey,
@@ -51,10 +68,11 @@ export class DeepSeekLLM implements LLM {
         fetchImpl: this.fetchImpl,
         request,
         signal: controller.signal,
-        // Reasoning models default to enabled thinking; disable it so the
-        // adapter behaves uniformly on deepseek-chat.
-        extraBody: { thinking: { type: "disabled" } },
-        label: "DeepSeek",
+        extraHeaders: {
+          "http-referer": this.appUrl,
+          "x-title": "pipeflow",
+        },
+        label: "OpenRouter",
       });
     } finally {
       this.streams.delete(controller);

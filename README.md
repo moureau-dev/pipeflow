@@ -12,7 +12,7 @@ It handles the plumbing between audio, speech-to-text, LLMs, text-to-speech, con
 
 * **Small** — ~130 kB packed, one runtime dependency ([zod](https://github.com/colinhacks/zod)).
 * **Realtime by default** — audio, transcripts, and speech stream continuously, with built-in interruption and barge-in handling.
-* **Provider-agnostic** — STT, LLM, and TTS are swappable adapters (Deepgram, DeepSeek, and Kokoro today).
+* **Provider-agnostic** — STT, LLM, and TTS are swappable adapters (Deepgram, DeepSeek, OpenRouter, and Kokoro today).
 * **Your backend stays yours** — tools and the audio transport are owned by your application; Pipeflow never executes your code.
 
 ## Status
@@ -28,7 +28,7 @@ shaped around but not yet implemented.
 
 | Area | Current | Designed for |
 | --- | --- | --- |
-| Providers | DeepSeek (LLM), Deepgram Flux (STT), Kokoro (TTS) | additional providers behind the same interfaces |
+| Providers | DeepSeek, OpenRouter (LLM), Deepgram Flux (STT), Kokoro (TTS) | additional providers behind the same interfaces |
 | Persistence | in-memory, SQLite | Postgres, Redis, … behind the same contract |
 | Transport | in-memory (tests, development) | WebSocket, WebRTC, … |
 | Conversation addressing | agent names and aliases | floor management, multi-participant turn-taking |
@@ -75,6 +75,7 @@ An agent does not inherently own a conversation. A conversation does not require
            │      │      │
            ▼      ▼      ▼
        Deepgram DeepSeek Kokoro
+                OpenRouter
 ```
 
 ## Installation
@@ -661,7 +662,7 @@ If it needs conversation data, **a tool provides that capability**.
 ## Providers
 
 <details>
-<summary>Vendor-independent interfaces and the current adapters: Deepgram, DeepSeek, Kokoro</summary>
+<summary>Vendor-independent interfaces and the current adapters: Deepgram, DeepSeek, OpenRouter, Kokoro</summary>
 
 Pipeflow separates provider interfaces (LLM, STT, TTS) from their
 implementations. The orchestrator works against the interfaces rather than
@@ -671,7 +672,7 @@ conversation layer.
 The project currently ships adapters for:
 
 * **STT:** Deepgram
-* **LLM:** DeepSeek
+* **LLM:** DeepSeek, OpenRouter
 * **TTS:** Kokoro
 
 Providers are configured with their own credentials — Pipeflow itself does

@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **OpenRouter LLM adapter** — `OpenRouterLLM` routes through any model on the OpenRouter marketplace over a shared OpenAI-compatible streaming engine (now also backing DeepSeek), with app attribution headers (`X-Title: pipeflow`, `HTTP-Referer` defaulting to `https://moureau.dev`).
+
 ## [0.0.1] - 2026-08-16
 
 Initial release: a realtime voice infrastructure SDK for TypeScript.

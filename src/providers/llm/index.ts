@@ -36,4 +36,4 @@ export async function complete(llm: LLM, request: LLMRequest): Promise<string> {
   return text;
 }
 
-export { DeepSeekLLM } from "./adapters/index";
+export { DeepSeekLLM, OpenRouterLLM } from "./adapters/index";

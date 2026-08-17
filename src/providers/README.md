@@ -5,7 +5,7 @@ their adapters.
 
 ```text
 providers/
-├── llm/       language models          (interface + adapters/deepseek)
+├── llm/       language models          (interface + adapters/deepseek, openrouter)
 ├── stt/       speech-to-text           (interface + adapters/deepgram)
 └── tts/       text-to-speech           (interface + adapters/kokoro)
 ```
@@ -24,7 +24,7 @@ interface LLM {
 
 `stream()` yields `delta` (text tokens), `tool_call` (with JSON-encoded
 arguments), `done`, or `error` events. Transport failures are thrown from the
-generator. Adapters: `DeepSeekLLM` (OpenAI-compatible).
+generator. Adapters: `DeepSeekLLM`, `OpenRouterLLM` (both OpenAI-compatible).
 
 ## STT
 

@@ -66,7 +66,8 @@ Each finalized participant turn is routed:
 
 `OrchestratorOptions` — `conversation`, `agents`, `llm` (defaults to the first
 agent's), `stt`, `tts`, `persistence`, `toolTimeoutMs`, `maxToolIterations`,
-`coordinations` (extra coordination definitions), `maxCoordinationSteps`,
+`coordinations` (a name-keyed record of extra coordination definitions, e.g.
+`{ clarify: { prompt: buildClarifyPrompt() } }`), `maxCoordinationSteps`,
 `temperature`, `maxTokens`.
 
 ## Notes

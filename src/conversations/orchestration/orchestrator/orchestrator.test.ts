@@ -9,6 +9,7 @@ import {
   formatTimeContext,
   formatTurnContext,
 } from "./orchestrator";
+import { buildClarifyPrompt } from "../coordination/coordination";
 import type { AudioChunk, ToolCall, UserId } from "../../types";
 import type {
   LLM,
@@ -289,7 +290,7 @@ function setupRoster(options: {
   coordinatorScript: LLMScript;
   scripts: Record<string, LLMScript>;
   tools?: Record<string, Tool<never, unknown>[]>;
-  coordinations?: Array<{ name: string; prompt: string; llm: FakeLLM }>;
+  coordinations?: Record<string, { prompt: string; llm: FakeLLM }>;
   maxCoordinationSteps?: number;
 }): Promise<RosterHarness> {
   return (async () => {
@@ -323,19 +324,15 @@ function setupRoster(options: {
       llms.set("Helper", helperLlm);
       agents.push(new Agent({ name: "Helper", context: "You help.", llm: helperLlm }));
     }
-    for (const coordination of options.coordinations ?? []) {
-      llms.set(coordination.name, coordination.llm);
+    for (const [name, coordination] of Object.entries(options.coordinations ?? {})) {
+      llms.set(name, coordination.llm);
     }
 
     const orchestrator = new Orchestrator({
       conversation,
       agents,
       llm: coordinatorLlm,
-      coordinations: (options.coordinations ?? []).map((coordination) => ({
-        name: coordination.name,
-        prompt: coordination.prompt,
-        llm: coordination.llm,
-      })),
+      coordinations: options.coordinations,
       maxCoordinationSteps: options.maxCoordinationSteps,
       stt,
       tts,
@@ -1518,13 +1515,14 @@ describe("Orchestrator", () => {
           yield { type: "done" };
         },
         scripts: {},
-        coordinations: [
-          { name: "resolve-details", prompt: "You resolve details.", llm: resolveLlm },
-        ],
+        coordinations: {
+          "resolve-details": { prompt: "You resolve details.", llm: resolveLlm },
+        },
       });
 
-      await speak(harness, "alice", "Plan my trip.");
+      await speak(harness, "alice", "Book my flight.");
 
+      // The nested coordination asked the question; the whole stack parked.
       // The sub-coordination ran on its own LLM with its own prompt and input.
       expect(resolveLlm.requests).toHaveLength(1);
       expect(resolveLlm.requests[0]!.messages[0]).toEqual({
@@ -1588,9 +1586,9 @@ describe("Orchestrator", () => {
           yield { type: "done" };
         },
         scripts: {},
-        coordinations: [
-          { name: "resolve-details", prompt: "You resolve details.", llm: resolveLlm },
-        ],
+        coordinations: {
+          "resolve-details": { prompt: "You resolve details.", llm: resolveLlm },
+        },
       });
 
       await speak(harness, "alice", "Book my flight.");
@@ -1621,6 +1619,93 @@ describe("Orchestrator", () => {
       expect(generations.map((g) => [g.agentName, g.text, g.status])).toEqual([
         ["Jarvis", "Which city?", "completed"],
         ["Jarvis", "Final: flight at 3pm.", "completed"],
+      ]);
+    });
+
+    test("clarify acquires missing information through questions and reassessment", async () => {
+      let clarifyCalls = 0;
+      const clarifyLlm = new FakeLLM(async function* () {
+        const n = clarifyCalls++;
+        if (n === 0) {
+          // Asks exactly ONE question first.
+          yield {
+            type: "tool_call",
+            id: "call_q",
+            name: "delegate",
+            arguments: JSON.stringify({
+              action: "user",
+              question: "Which city are you flying to?",
+            }),
+          };
+          yield { type: "done" };
+          return;
+        }
+        // The answer arrived: reassess and complete with the clear request.
+        yield {
+          type: "tool_call",
+          id: "call_c",
+          name: "delegate",
+          arguments: JSON.stringify({
+            action: "complete",
+            output: "Book a flight to London.",
+          }),
+        };
+        yield { type: "done" };
+      });
+      const harness = await setupRoster({
+        coordinatorScript: async function* (request) {
+          if (request.messages.at(-1)?.role === "tool") {
+            yield { type: "delta", content: "Booking your flight to London. " };
+            yield { type: "done" };
+            return;
+          }
+          yield {
+            type: "tool_call",
+            id: "call_1",
+            name: "delegate",
+            arguments: JSON.stringify({
+              action: "coordination",
+              coordination: "clarify",
+              input: "Book me a flight.",
+            }),
+          };
+          yield { type: "done" };
+        },
+        scripts: {},
+        coordinations: {
+          clarify: { prompt: buildClarifyPrompt(), llm: clarifyLlm },
+        },
+      });
+
+      await speak(harness, "alice", "Book me a flight.");
+
+      // clarify asked its question; the whole stack (understand → clarify)
+      // parked, and the question is the recorded generation.
+      const transcript = await harness.persistence.listTranscript("conv-1");
+      expect(transcript.map((e) => e.toString())).toEqual([
+        "al: Book me a flight.",
+        "Jarvis: Which city are you flying to?",
+      ]);
+      expect(clarifyLlm.requests).toHaveLength(1);
+      expect(harness.llm.requests).toHaveLength(1);
+
+      // The answer resumes the innermost frame: clarify reassesses, completes
+      // with the clarified request, and the parent merges it.
+      await speak(harness, "alice", "London.");
+
+      expect(clarifyLlm.requests).toHaveLength(2);
+      expect(harness.llm.requests).toHaveLength(2);
+      const finalTranscript = await harness.persistence.listTranscript("conv-1");
+      expect(finalTranscript.map((e) => e.toString())).toEqual([
+        "al: Book me a flight.",
+        "Jarvis: Which city are you flying to?",
+        "al: London.",
+        "Jarvis: Booking your flight to London.",
+      ]);
+      const generations = await harness.persistence.listGenerations("conv-1");
+      expect(generations.map((g) => [g.agentName, g.text, g.status])).toEqual([
+        ["Jarvis", "Which city are you flying to?", "completed"],
+        ["Jarvis", "Booking your flight to London.", "completed"],
       ]);
     });
 

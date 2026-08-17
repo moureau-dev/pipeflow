@@ -83,6 +83,11 @@ Coordination A resumes → completes
 
 - Coordinations run on the orchestrator's shared LLM (or a per-coordination
   `llm` override); agents keep their own.
+- Extra coordinations are registered by name via the orchestrator's
+  `coordinations` option — e.g. `{ clarify: { prompt: buildClarifyPrompt() } }`
+  — and any coordination can delegate to them with
+  `action: "coordination"`. Registering your own `understand` replaces the
+  built-in entry point.
 - Delegated agents run **text-only** — only the coordination narrates and
   speaks.
 - See the [orchestrator README](../orchestrator/README.md) for how coordinations

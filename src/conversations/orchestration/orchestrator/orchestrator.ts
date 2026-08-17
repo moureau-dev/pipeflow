@@ -16,6 +16,7 @@ import {
   CoordinationCancelled,
   CoordinationSuspension,
   type CoordinationOptions,
+  type CoordinationRegistration,
   type CoordinationRuntime,
   type DelegatedTask,
   type DelegationResult,
@@ -45,8 +46,11 @@ export interface OrchestratorOptions {
   toolTimeoutMs?: number;
   /** Safety bound on tool-call round trips per generation. */
   maxToolIterations?: number;
-  /** Additional coordinations the runtime can delegate to. */
-  coordinations?: CoordinationOptions[];
+  /**
+   * Additional coordinations the runtime can delegate to, registered by
+   * name (the key is the coordination's name).
+   */
+  coordinations?: Record<string, CoordinationRegistration>;
   /** Safety bound on LLM reasoning steps per coordination execution. */
   maxCoordinationSteps?: number;
   temperature?: number;
@@ -219,7 +223,7 @@ export class Orchestrator {
   private readonly toolTimeoutMs: number;
   private readonly maxToolIterations: number;
   private readonly maxCoordinationSteps: number;
-  private readonly coordinations: Coordination[];
+  private readonly coordinations: Record<string, Coordination>;
   private readonly understand: Coordination | null;
   private readonly temperature: number | undefined;
   private readonly maxTokens: number | undefined;
@@ -265,25 +269,25 @@ export class Orchestrator {
     this.temperature = options.temperature;
     this.maxTokens = options.maxTokens;
 
-    // With a roster, the built-in `understand` coordination runs unaddressed
-    // turns: it decides whether to delegate to agents, ask the user, or
-    // answer directly. Extra coordinations from options are registered too.
-    const coordinationOptions: CoordinationOptions[] = [...(options.coordinations ?? [])];
-    if (agents.length > 1) {
-      const alreadyDefined = coordinationOptions.some((c) => c.name === "understand");
-      if (!alreadyDefined) {
-        coordinationOptions.unshift({
-          name: "understand",
-          prompt: buildUnderstandPrompt(agents),
-        });
-      }
+    // Coordinations are registered by name. The built-in `understand` runs
+    // unaddressed turns: it decides whether to delegate to agents, ask the
+    // user, or answer directly. Apps can override it by registering their
+    // own "understand" key, and add their own (e.g. clarify, review).
+    const registrations: Record<string, CoordinationRegistration> = {
+      ...(options.coordinations ?? {}),
+    };
+    if (agents.length > 1 && !registrations.understand) {
+      registrations.understand = { prompt: buildUnderstandPrompt(agents) };
     }
-    this.coordinations = coordinationOptions.map(
-      (coordinationOptionsItem) =>
-        new Coordination(coordinationOptionsItem, this.coordinationRuntime()),
-    );
-    this.understand =
-      this.coordinations.find((coordination) => coordination.name === "understand") ?? null;
+    const coordinations: Record<string, Coordination> = {};
+    for (const [name, registration] of Object.entries(registrations)) {
+      coordinations[name] = new Coordination(
+        { name, ...registration },
+        this.coordinationRuntime(),
+      );
+    }
+    this.coordinations = coordinations;
+    this.understand = this.coordinations["understand"] ?? null;
   }
 
   /**
@@ -756,7 +760,7 @@ export class Orchestrator {
         return orchestrator.agents;
       },
       get coordinations() {
-        return orchestrator.coordinations;
+        return Object.values(orchestrator.coordinations);
       },
       get llm() {
         return orchestrator.llm!;

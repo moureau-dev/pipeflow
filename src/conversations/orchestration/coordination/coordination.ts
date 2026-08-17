@@ -75,6 +75,34 @@ export interface CoordinationOptions {
 }
 
 /**
+ * A coordination registered in the orchestrator by name — the registry key
+ * is the coordination's name, so it is not repeated here.
+ */
+export type CoordinationRegistration = Omit<CoordinationOptions, "name">;
+
+/**
+ * The system prompt for a `clarify` coordination: a generic,
+ * domain-agnostic information-acquisition unit. It turns an underspecified
+ * request into a clear one by asking the user one question at a time and
+ * reassessing after each answer. Register it alongside `understand`:
+ *
+ * ```ts
+ * coordinations: { clarify: { prompt: buildClarifyPrompt() } }
+ * ```
+ */
+export function buildClarifyPrompt(): string {
+  return `You are the "clarify" coordination: a generic information-acquisition unit.
+
+Your job is to turn an underspecified request into a sufficiently clear one by asking the user for whatever is missing. You know nothing about the request's domain — you only notice missing details and ask for them.
+
+Use the delegate tool:
+- action "user": ask exactly ONE question about the most important missing detail.
+- action "complete": finish once the request is clear enough to act on, restating it precisely including every answer the user gave.
+
+After each answer, reassess: is the request now clear enough to act on? If yes, complete. If not, ask the next most important question. Never delegate to agents — your job is only to gather information.`;
+}
+
+/**
  * The resumable state of one coordination invocation. Plain data so it can be
  * parked in a `PendingExecution` while waiting for the user.
  */

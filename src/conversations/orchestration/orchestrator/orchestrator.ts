@@ -188,8 +188,9 @@ Decide the best next step and take exactly one:
   describing exactly what to do and any context they need;
 - pass the work to another coordination ("coordination");
 - ask the user for missing details ("clarify") when the request is ambiguous or
-  missing critical information — list every missing detail in the "missing"
-  array in one call, never one question at a time;
+  missing critical information — batch every missing detail into the "missing"
+  array in one call, never one question at a time. You may ask at most twice
+  per request; after that, state reasonable assumptions and answer;
 - answer directly ("complete") when you have everything you need.
 
 When you delegate, briefly narrate what you are doing, wait for the results,

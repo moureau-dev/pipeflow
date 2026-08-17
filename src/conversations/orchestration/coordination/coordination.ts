@@ -76,8 +76,8 @@ export interface CoordinationOptions {
   /**
    * Deterministic cap on user-question rounds per run (both the structured
    * `clarify` action and open-ended `user` questions, across suspensions).
-   * Once exhausted, the coordination is told to state assumptions and
-   * complete instead of asking again. Defaults to 2.
+   * Once exhausted, the coordination is told to state reasonable
+   * assumptions and complete. Defaults to 2.
    */
   maxQuestionRounds?: number;
 }
@@ -114,10 +114,10 @@ export function buildClarifyPrompt(): string {
 Your job is to turn an underspecified request into a sufficiently clear one by asking the user for whatever is missing. You know nothing about the request's domain — you only notice missing details and ask for them.
 
 Use the delegate tool:
-- action "clarify": list every missing detail in the "missing" array in one call — never split related details across multiple calls, and never ask one question at a time.
+- action "clarify": list every missing detail in the "missing" array in one call — one round-trip covers all of them, never one question at a time, and never ask for anything that can be reasonably inferred.
 - action "complete": finish once the request is clear enough to act on, restating it precisely including every answer the user gave.
 
-After each answer, reassess: is the request now clear enough to act on? If yes, complete. If not, call "clarify" again with the remaining missing details. The runtime stops you after two clarify rounds; if you are still missing details then, state reasonable assumptions and complete. Never delegate to agents — your job is only to gather information.`;
+You may ask the user questions at most twice per run. After each answer, reassess: is the request now clear enough to act on? If yes, complete. If not, call "clarify" again with the remaining missing details. After the second round, if anything is still missing, state reasonable assumptions and complete. Never delegate to agents — your job is only to gather information.`;
 }
 
 /**

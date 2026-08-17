@@ -433,8 +433,8 @@ what should happen next rather than doing the work itself. It can:
 - **pass the work to another coordination**;
 - **ask the user** for missing details via a structured, batched `clarify`
   action — every missing detail goes into one question, and question rounds
-  are deterministically capped (default 2), after which reasonable
-  assumptions are stated;
+  are capped per run (default 2), after which reasonable assumptions are
+  stated;
 - **complete** with a direct answer.
 
 ```text

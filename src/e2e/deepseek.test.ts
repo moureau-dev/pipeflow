@@ -487,7 +487,6 @@ describe("LLM e2e (requires DEEPSEEK_API_KEY or OPENROUTER_API_KEY)", () => {
         userId: "alice",
         text: answers.slice(0, round + 1).join(" "),
       });
-      let advanced = false;
       try {
         await waitFor(
           async () => {
@@ -524,8 +523,11 @@ describe("LLM e2e (requires DEEPSEEK_API_KEY or OPENROUTER_API_KEY)", () => {
         (g) => g.kind !== "sub" && g.status === "completed",
       );
       console.log(
-        `clarify chain: did not converge within ${answers.length} answers (${completed.length} generations)`,
+        `clarify chain: did not converge within ${answers.length} answers (${completed.length} completed generations)`,
       );
+      for (const g of completed) {
+        console.log(`  [${g.status}] ${g.text.slice(0, 160)}`);
+      }
       return;
     }
 

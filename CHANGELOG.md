@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **OpenRouter LLM adapter** — `OpenRouterLLM` routes through any model on the OpenRouter marketplace over a shared OpenAI-compatible streaming engine (now also backing DeepSeek), with app attribution headers (`X-Title: pipeflow`, `HTTP-Referer` defaulting to `https://moureau.dev`).
 - **Provider timeline hook** — both LLM adapters accept an `onTiming` callback (`request-start` / `headers` / `first-chunk`) so application delay, network/queue delay, and model TTFT can be separated (`bun scripts/latency-profile.ts` now reports the decomposition).
 - **Structured clarification** — the `delegate` tool gains a `clarify` action: the coordination declares the missing details in a `missing` array, and the framework renders and speaks one batched question for all of them (instead of one question per missing detail, model-permitting).
-- **Deterministic question budget** — `clarify` and `user` question rounds are capped per coordination run at `maxQuestionRounds` (default 2, carried across suspensions); past the cap the coordination states assumptions and completes. The real-model clarify e2e went from 24.6s / 8 generations (and 60s+ timeouts) to ~5s / bounded rounds.
+- **Deterministic question budget** — `clarify` and `user` question rounds are capped per coordination run at `maxQuestionRounds` (default 2, carried across suspensions); past the cap the coordination states reasonable assumptions and completes. The real-model clarify e2e went from 24.6s / 8 generations (and 60s+ timeouts) to ~5s / bounded rounds.
 
 ### Fixed
 

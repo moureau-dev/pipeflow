@@ -28,8 +28,8 @@ its reasoning/narration and, when it decides, takes exactly one action:
 
 Both question actions (`clarify` and `user`) count against a deterministic
 `maxQuestionRounds` budget (default 2) per run, carried across suspensions —
-past the cap, the coordination is told to state assumptions and complete, so a
-clarification chain can never grow without bound.
+past the cap, the coordination is told to state reasonable assumptions and
+complete, so a clarification chain can never grow without bound.
 
 ```jsonc
 delegate({
@@ -101,8 +101,8 @@ Coordination A resumes → completes
   (`buildClarifyPrompt`) exists for apps that want to delegate questioning to
   a dedicated unit. Both batch every missing detail into one question, and
   user-question rounds are capped at `maxQuestionRounds` (default 2) per run
-  — after which the coordination states assumptions and completes — so
-  clarification is bounded in LLM round-trips, not just in spirit.
+  — after which the coordination states reasonable assumptions and completes
+  — so clarification is bounded in LLM round-trips, not just in spirit.
 - Extra coordinations are registered by name via the orchestrator's
   `coordinations` option — e.g. `{ clarify: { prompt: buildClarifyPrompt() } }`
   — and any coordination can delegate to them with

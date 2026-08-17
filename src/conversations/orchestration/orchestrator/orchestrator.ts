@@ -55,6 +55,13 @@ export interface OrchestratorOptions {
   maxCoordinationSteps?: number;
   temperature?: number;
   maxTokens?: number;
+  /**
+   * Bounds how much conversation history each LLM request carries (default
+   * `{ maxTurns: 5, maxChars: 4000 }` — provider TTFT grows with input size,
+   * and a bounded window keeps requests in the fast regime). Pass `false` to
+   * always send the full history.
+   */
+  historyWindow?: HistoryWindow | false;
 }
 
 interface SttSessionEntry {
@@ -166,6 +173,51 @@ function findAddressedAgent(agents: readonly Agent[], text: string): Agent | nul
   return null;
 }
 
+/** How much conversational history an LLM request may carry. */
+export interface HistoryWindow {
+  /** Keep at most this many user turns (the current turn is always kept). */
+  maxTurns: number;
+  /** Drop oldest whole messages until the window fits this many characters. */
+  maxChars: number;
+}
+
+/**
+ * Bounds conversation history for an LLM request: keep the most recent
+ * `maxTurns` user turns (plus anything after them), then drop oldest whole
+ * messages until the window fits `maxChars`. The current turn is the last
+ * user message and always survives. Provider TTFT grows with input size, so
+ * a bounded window keeps requests in the fast regime.
+ */
+export function windowHistory(
+  history: LLMMessage[],
+  { maxTurns, maxChars }: HistoryWindow,
+): LLMMessage[] {
+  if (history.length === 0) return history;
+
+  let start = 0;
+  let userSeen = 0;
+  for (let i = history.length - 1; i >= 0; i--) {
+    if (history[i]!.role === "user") {
+      userSeen++;
+      if (userSeen === maxTurns) {
+        start = i;
+        break;
+      }
+    }
+  }
+  let windowed = start > 0 ? history.slice(start) : history;
+
+  if (maxChars > 0) {
+    while (
+      windowed.length > 1 &&
+      windowed.reduce((sum, message) => sum + message.content.length, 0) > maxChars
+    ) {
+      windowed = windowed.slice(1);
+    }
+  }
+  return windowed;
+}
+
 /** The built-in coordinator: understands the request and decides what's next. */
 function buildUnderstandPrompt(agents: readonly Agent[]): string {
   const roster = agents
@@ -224,6 +276,7 @@ export class Orchestrator {
   private readonly toolTimeoutMs: number;
   private readonly maxToolIterations: number;
   private readonly maxCoordinationSteps: number;
+  private readonly historyWindow: HistoryWindow | false;
   private readonly coordinations: Record<string, Coordination>;
   private readonly understand: Coordination | null;
   private readonly temperature: number | undefined;
@@ -267,6 +320,7 @@ export class Orchestrator {
     this.toolTimeoutMs = options.toolTimeoutMs ?? 30_000;
     this.maxToolIterations = options.maxToolIterations ?? 10;
     this.maxCoordinationSteps = options.maxCoordinationSteps ?? 20;
+    this.historyWindow = options.historyWindow ?? { maxTurns: 5, maxChars: 4_000 };
     this.temperature = options.temperature;
     this.maxTokens = options.maxTokens;
 
@@ -619,7 +673,7 @@ export class Orchestrator {
     if (agent.context) {
       messages.push({ role: "system", name: agent.name, content: agent.context });
     }
-    messages.push(...this.history);
+    messages.push(...this.windowedHistory());
 
     let text = "";
 
@@ -748,6 +802,16 @@ export class Orchestrator {
   // -------------------------------------------------------------------------
 
   /**
+   * The conversation history an LLM request should carry: the full history,
+   * or the bounded window when `historyWindow` is enabled.
+   */
+  private windowedHistory(): LLMMessage[] {
+    return this.historyWindow === false
+      ? this.history
+      : windowHistory(this.history, this.historyWindow);
+  }
+
+  /**
    * The runtime the coordinations reason against. Binds the coordination
    * primitives (delegate to agents, ask the user, speech, budget, cancellation)
    * to the orchestrator's machinery without coupling `Coordination` to it.
@@ -767,7 +831,7 @@ export class Orchestrator {
         return orchestrator.llm!;
       },
       get history() {
-        return orchestrator.history;
+        return orchestrator.windowedHistory();
       },
       delegateAgentTasks: (tasks) => this.delegateAgentTasks(tasks),
       askUser: (frame, question) => this.askUser(frame, question),
@@ -1029,7 +1093,7 @@ export class Orchestrator {
     if (agent.context) {
       messages.push({ role: "system", name: agent.name, content: agent.context });
     }
-    messages.push(...this.history);
+    messages.push(...this.windowedHistory());
     // The prompt carries a time stamp so time-sensitive tasks (flights,
     // meetings, deadlines) don't reason about a stale "now".
     messages.push({ role: "user", content: `${task.prompt}\n\n${formatTimeContext()}` });

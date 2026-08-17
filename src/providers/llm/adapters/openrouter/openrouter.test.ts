@@ -342,6 +342,88 @@ describe("OpenRouterLLM", () => {
     await expect(generator.next()).rejects.toThrow("aborted");
   });
 
+  test("emits tool calls once even when the provider repeats the finish_reason chunk", async () => {
+    // gemini via OpenRouter sometimes sends finish_reason "tool_calls" on
+    // several chunks; the tool call must not be re-emitted (the app would
+    // otherwise double-resolve it).
+    const toolFrame = JSON.stringify({
+      choices: [
+        {
+          delta: { tool_calls: [{ index: 0, id: "call_1", function: { name: "get_weather", arguments: "{}" } }] },
+          finish_reason: "tool_calls",
+        },
+      ],
+    });
+    const llm = new OpenRouterLLM({
+      apiKey: "test-key",
+      fetch: async () =>
+        sseResponse(
+          sseFrame(toolFrame),
+          sseFrame(toolFrame), // duplicate finish chunk
+          sseFrame(toolFrame), // and again
+          "data: [DONE]\n\n",
+        ),
+    });
+
+    const events = [];
+    for await (const event of llm.stream(basicRequest)) {
+      events.push(event);
+    }
+    expect(events).toEqual([
+      { type: "tool_call", id: "call_1", name: "get_weather", arguments: "{}" },
+      { type: "done" },
+    ]);
+  });
+
+  test("reports provider usage when the final chunk carries it", async () => {
+    const usageFrame = JSON.stringify({
+      choices: [],
+      usage: { prompt_tokens: 860, completion_tokens: 114 },
+    });
+    const usages: Array<{ promptTokens: number; completionTokens: number }> = [];
+    const withCapture = new OpenRouterLLM({
+      apiKey: "test-key",
+      onUsage: (usage) => usages.push(usage),
+      fetch: async () =>
+        sseResponse(
+          sseFrame(deltaChunk("ok")),
+          sseFrame(deltaChunk(""), "stop"),
+          sseFrame(usageFrame),
+          "data: [DONE]\n\n",
+        ),
+    });
+
+    const events = [];
+    for await (const event of withCapture.stream(basicRequest)) {
+      events.push(event);
+    }
+    expect(events).toEqual([{ type: "delta", content: "ok" }, { type: "done" }]);
+    expect(usages).toEqual([{ promptTokens: 860, completionTokens: 114 }]);
+  });
+
+  test("aborts a stream that goes silent for idleTimeoutMs", async () => {
+    const encoder = new TextEncoder();
+    // Deliver one frame, then go silent forever — exactly the "output
+    // delivered, stream never terminates" failure the watchdog guards.
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(encoder.encode(sseFrame(deltaChunk("first"))));
+      },
+    });
+
+    const llm = new OpenRouterLLM({
+      apiKey: "test-key",
+      idleTimeoutMs: 50,
+      fetch: async () => new Response(stream, { status: 200 }),
+    });
+
+    const generator = llm.stream(basicRequest);
+    const first = await generator.next();
+    expect(first.value).toEqual({ type: "delta", content: "first" });
+
+    await expect(generator.next()).rejects.toThrow(/idle for 50ms/);
+  });
+
   test("stop is a no-op when nothing is streaming", () => {
     const llm = new OpenRouterLLM({ apiKey: "test-key" });
     expect(() => llm.stop()).not.toThrow();

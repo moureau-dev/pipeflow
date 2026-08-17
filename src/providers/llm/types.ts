@@ -46,6 +46,14 @@ export type LLMStreamTimingPoint = "request-start" | "headers" | "first-chunk";
 
 export type LLMStreamTimingCallback = (point: LLMStreamTimingPoint) => void;
 
+/** Token usage reported by the provider (when it includes usage in the stream). */
+export interface LLMUsage {
+  promptTokens: number;
+  completionTokens: number;
+}
+
+export type LLMUsageCallback = (usage: LLMUsage) => void;
+
 export type LLMEvent =
   | { type: "delta"; content: string }
   | { type: "tool_call"; id: string; name: string; arguments: string }

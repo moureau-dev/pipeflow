@@ -12,11 +12,13 @@
 import { OpenRouterLLM } from "../src/providers/llm/adapters/openrouter/openrouter";
 import { DeepSeekLLM } from "../src/providers/llm/adapters/deepseek/deepseek";
 import { delegateToolDefinition } from "../src/conversations/orchestration/coordination/coordination";
+import { windowHistory } from "../src/conversations/orchestration/orchestrator/orchestrator";
 import type {
   LLM,
   LLMRequest,
   LLMToolDefinition,
   LLMStreamTimingPoint,
+  LLMUsage,
 } from "../src/providers/llm/types";
 
 const openRouterKey = process.env.OPENROUTER_API_KEY;
@@ -36,10 +38,13 @@ function makeLlm(): LLM {
   const onTiming = (point: LLMStreamTimingPoint) => {
     if (currentRun !== null) currentRun[point] = performance.now() - currentRunStart;
   };
+  const onUsage = (usage: LLMUsage) => {
+    if (currentRun !== null) currentRun.usage = usage;
+  };
   if (openRouterKey) {
-    return new OpenRouterLLM({ apiKey: openRouterKey, model: MODEL, onTiming });
+    return new OpenRouterLLM({ apiKey: openRouterKey, model: MODEL, onTiming, onUsage });
   }
-  return new DeepSeekLLM({ apiKey: deepSeekKey!, model: "deepseek-v4-flash", onTiming });
+  return new DeepSeekLLM({ apiKey: deepSeekKey!, model: "deepseek-v4-flash", onTiming, onUsage });
 }
 
 // ---------------------------------------------------------------------------
@@ -168,6 +173,20 @@ const scenarios: Array<{
     diagnostics: () =>
       `~8KB history, real delegate schema (${JSON.stringify(REAL_DELEGATE.parameters).length} bytes)`,
   },
+  // B: the same workload with the orchestrator's history window applied —
+  // the whole point of windowing is keeping requests in the fast regime.
+  {
+    name: "coordination windowed",
+    build: () => ({
+      messages: [
+        { role: "system", content: COORDINATOR_PROMPT },
+        ...windowHistory(realisticHistory(8_000), { maxTurns: 5, maxChars: 4_000 }),
+      ],
+      tools: [REAL_DELEGATE],
+    }),
+    diagnostics: () =>
+      `windowed (5 turns / 4k chars) ${JSON.stringify(REAL_DELEGATE.parameters).length}-byte delegate schema`,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -181,6 +200,22 @@ interface Run {
   firstDelta?: number;
   toolCall?: number;
   done?: number;
+  error?: string;
+  usage?: LLMUsage;
+  /** Locally estimated prompt tokens (chars / 4), for discrepancy checks. */
+  estimate?: number;
+}
+
+/** Rough local prompt-token estimate from the request shape. */
+function estimatePromptTokens(request: LLMRequest): number {
+  let chars = 0;
+  for (const message of request.messages) {
+    chars += message.content.length + (message.name?.length ?? 0);
+  }
+  for (const tool of request.tools ?? []) {
+    chars += tool.name.length + tool.description.length + JSON.stringify(tool.parameters).length;
+  }
+  return Math.ceil(chars / 4);
 }
 
 // The in-flight run receives provider-timeline points from the adapter's
@@ -190,7 +225,7 @@ let currentRunStart = 0;
 
 async function runOnce(llm: LLM, request: LLMRequest): Promise<Run> {
   const start = performance.now();
-  const run: Run = {};
+  const run: Run = { estimate: estimatePromptTokens(request) };
   currentRun = run;
   currentRunStart = start;
   try {
@@ -204,6 +239,10 @@ async function runOnce(llm: LLM, request: LLMRequest): Promise<Run> {
         run.done = at;
       }
     }
+  } catch (error) {
+    // A provider failure (rate limit, stalled stream, …) fails one run, not
+    // the whole profile.
+    run.error = error instanceof Error ? error.message : String(error);
   } finally {
     currentRun = null;
   }
@@ -339,6 +378,9 @@ for (const scenario of scenarios) {
   const reqStarts: (number | undefined)[] = [];
   const headers: (number | undefined)[] = [];
   const firstChunks: (number | undefined)[] = [];
+  const errors: string[] = [];
+  const usages: LLMUsage[] = [];
+  const estimates: number[] = [];
   for (let i = 0; i < RUNS; i++) {
     const run = await runOnce(llm, request);
     deltas.push(run.firstDelta);
@@ -347,9 +389,30 @@ for (const scenario of scenarios) {
     reqStarts.push(run['request-start']);
     headers.push(run.headers);
     firstChunks.push(run['first-chunk']);
+    if (run.error) errors.push(run.error);
+    if (run.usage) usages.push(run.usage);
+    if (run.estimate !== undefined) estimates.push(run.estimate);
     process.stdout.write(`  run ${i + 1}/${RUNS}…`);
   }
   console.log();
+  if (errors.length > 0) {
+    console.log(`  ${errors.length}/${RUNS} runs errored (first: ${errors[0]!.slice(0, 120)})`);
+  }
+
+  // Tokens: provider-reported vs local estimate. The gap reveals system
+  // prompt / tool-schema / serialization overhead that char counts miss.
+  if (usages.length > 0 || estimates.length > 0) {
+    const med = (values: number[]): number | undefined =>
+      values.length > 0 ? values.slice().sort((a, b) => a - b)[Math.floor(values.length / 2)] : undefined;
+    const providerTokens = med(usages.map((u) => u.promptTokens));
+    const est = med(estimates);
+    console.log(
+      `  prompt tokens: provider ${providerTokens ?? "—"}  local-estimate ${est ?? "—"}` +
+        (providerTokens !== undefined && est !== undefined
+          ? `  (provider is ${Math.round((providerTokens / Math.max(est, 1)) * 100)}% of estimate)`
+          : ""),
+    );
+  }
 
   const deltaPresent = deltas.filter((v): v is number => v !== undefined);
   const threshold = 2 * percentile(deltaPresent, 0.5);

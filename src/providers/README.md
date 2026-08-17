@@ -30,6 +30,16 @@ Both adapters accept an optional `onTiming` callback that fires at
 `request-start`, `headers`, and `first-chunk` — enough to split application
 delay, network/queue delay, and model TTFT apart when profiling voice latency:
 
+Both adapters also abort a stream that delivers no data for `idleTimeoutMs`
+(default 8000ms) — a provider whose connection goes silent after the model has
+already produced its output (a tool call never followed by a terminating
+frame) fails fast with a clear error instead of hanging for tens of seconds.
+Raise it for providers with slow first-token times.
+
+An optional `onUsage` callback receives the provider-reported prompt/completion
+token counts (OpenRouter includes usage in the stream's final chunk), so
+latency-vs-tokens curves are measurable.
+
 ## STT
 
 ```ts

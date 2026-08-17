@@ -1,4 +1,10 @@
-import type { LLM, LLMEvent, LLMRequest, LLMStreamTimingCallback } from "../../types";
+import type {
+  LLM,
+  LLMEvent,
+  LLMRequest,
+  LLMStreamTimingCallback,
+  LLMUsageCallback,
+} from "../../types";
 import type { FetchLike } from "../../../shared";
 import { openAICompatibleStream } from "../openai-compatible";
 
@@ -12,6 +18,14 @@ export interface DeepSeekOptions {
   fetch?: FetchLike;
   /** Provider-timeline hook: request-start / headers / first-chunk. */
   onTiming?: LLMStreamTimingCallback;
+  /**
+   * Abort a stream that delivers no data for this long (default 8000ms) —
+   * protects against provider connections that go silent after the model
+   * already produced its output. Raise it for providers with slow TTFT.
+   */
+  idleTimeoutMs?: number;
+  /** Called with the provider-reported token usage (when included). */
+  onUsage?: LLMUsageCallback;
 }
 
 /**
@@ -23,6 +37,8 @@ export class DeepSeekLLM implements LLM {
   private readonly baseUrl: string;
   private readonly fetchImpl: FetchLike;
   private readonly onTiming: LLMStreamTimingCallback | undefined;
+  private readonly idleTimeoutMs: number;
+  private readonly onUsage: LLMUsageCallback | undefined;
   private readonly streams = new Set<AbortController>();
 
   constructor(options: DeepSeekOptions) {
@@ -34,6 +50,8 @@ export class DeepSeekLLM implements LLM {
     this.baseUrl = (options.baseUrl ?? "https://api.deepseek.com").replace(/\/+$/, "");
     this.fetchImpl = options.fetch ?? fetch;
     this.onTiming = options.onTiming;
+    this.idleTimeoutMs = options.idleTimeoutMs ?? 8_000;
+    this.onUsage = options.onUsage;
   }
 
   /** Cancel every in-flight stream (parallel sub-generations included). */
@@ -60,6 +78,8 @@ export class DeepSeekLLM implements LLM {
         extraBody: { thinking: { type: "disabled" } },
         label: "DeepSeek",
         onTiming: this.onTiming,
+        idleTimeoutMs: this.idleTimeoutMs,
+        onUsage: this.onUsage,
       });
     } finally {
       this.streams.delete(controller);

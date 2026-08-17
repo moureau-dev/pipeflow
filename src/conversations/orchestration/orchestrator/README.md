@@ -68,7 +68,10 @@ Each finalized participant turn is routed:
 agent's), `stt`, `tts`, `persistence`, `toolTimeoutMs`, `maxToolIterations`,
 `coordinations` (a name-keyed record of extra coordination definitions, e.g.
 `{ clarify: { prompt: buildClarifyPrompt() } }`), `maxCoordinationSteps`,
-`temperature`, `maxTokens`.
+`temperature`, `maxTokens`, `historyWindow` (default `{ maxTurns: 5,
+maxChars: 4000 }` — bounds the conversation history each LLM request carries,
+since provider TTFT grows with input size; pass `false` to always send the
+full history).
 
 ## Notes
 

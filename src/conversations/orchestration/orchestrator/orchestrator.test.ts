@@ -8,13 +8,17 @@ import {
   pickAgent,
   formatTimeContext,
   formatTurnContext,
+  windowHistory,
+  type HistoryWindow,
 } from "./orchestrator";
 import { buildClarifyPrompt } from "../coordination/coordination";
+import { OpenRouterLLM } from "../../../providers/llm/adapters/openrouter/openrouter";
 import type { AudioChunk, ToolCall, UserId } from "../../types";
 import type {
   LLM,
   LLMEvent,
   LLMRequest,
+  LLMMessage,
 } from "../../../providers/llm/types";
 import type { STT, STTOptions, STTSession } from "../../../providers/stt/types";
 import type { TTS, TTSRequest } from "../../../providers/tts/types";
@@ -194,11 +198,15 @@ function setup(options: {
   tools?: Tool<never, unknown>[];
   toolTimeoutMs?: number;
   context?: string;
+  /** Inject a real LLM (e.g. an adapter over a mocked fetch) instead of a scripted fake. */
+  llm?: LLM;
+  /** Override the conversation-history window (default 5 turns / 4k chars). */
+  historyWindow?: HistoryWindow | false;
 }): Promise<Harness> {
   return (async () => {
     const persistence = new MemoryPersistence();
     const conversation = new Conversation({ id: "conv-1", persistence });
-    const llm = new FakeLLM(options.script);
+    const llm = options.llm ?? new FakeLLM(options.script);
     const stt = new FakeSTT();
     const tts =
       options.tts ??
@@ -219,13 +227,24 @@ function setup(options: {
       tts,
       persistence,
       toolTimeoutMs: options.toolTimeoutMs ?? 30_000,
+      historyWindow: options.historyWindow,
     });
 
     conversation.start();
     await conversation.participate({ userId: "alice", aliases: ["al"] });
     await orchestrator.start();
 
-    return { conversation, orchestrator, llm, stt, tts, persistence };
+    return {
+      conversation,
+      orchestrator,
+      // When a real LLM is injected (the stall-recovery suite) it replaces
+      // the fake; that suite never reads `.requests`, so the type stays the
+      // fake's for the rest of the file.
+      llm: llm as FakeLLM,
+      stt,
+      tts,
+      persistence,
+    };
   })();
 }
 
@@ -2002,5 +2021,341 @@ describe("Orchestrator", () => {
 
     expect(session.ended).toBe(1);
     expect(harness.llm.stopCalls.length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Real-adapter stall recovery (OpenRouter adapter over a mocked fetch — no
+// network). Locks in the production safety property: a stalled SSE stream
+// fails fast via the idle watchdog, the generation errors cleanly, and a
+// fresh turn recovers without duplicate state or executed tools.
+// ---------------------------------------------------------------------------
+
+describe("LLM stream stall recovery", () => {
+  const sseFrame = (lines: string[]): string =>
+    lines.map((line) => `data: ${line}`).join("\n") + "\n\n";
+  const deltaFrame = (content: string, finishReason: string | null = null): string =>
+    JSON.stringify({
+      choices: [{ delta: { content }, finish_reason: finishReason }],
+    });
+
+  /** An SSE body that delivers `frames` then goes permanently silent. */
+  const stalledBody = (frames: string[]): ReadableStream<Uint8Array> => {
+    const encoder = new TextEncoder();
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const frame of frames) controller.enqueue(encoder.encode(frame));
+        // never close, never enqueue again
+      },
+    });
+  };
+
+  /** A well-formed SSE body that closes after `frames`. */
+  const okBody = (frames: string[]): ReadableStream<Uint8Array> => {
+    const encoder = new TextEncoder();
+    return new ReadableStream<Uint8Array>({
+      start(controller) {
+        for (const frame of frames) controller.enqueue(encoder.encode(frame));
+        controller.close();
+      },
+    });
+  };
+
+  /** Fetch that serves `stalled` streams first, then `ok` (the retry). */
+  const stallThenOk = (stalled: ReadableStream<Uint8Array>[], ok: ReadableStream<Uint8Array>) => {
+    let calls = 0;
+    return async () => {
+      const stream = calls < stalled.length ? stalled[calls]! : ok;
+      calls++;
+      return new Response(stream, { status: 200 });
+    };
+  };
+
+  test("a stall before any output fails the generation and a fresh turn succeeds", async () => {
+    const errors: Error[] = [];
+    const harness = await setup({
+      script: async function* () {},
+      llm: new OpenRouterLLM({
+        apiKey: "test",
+        idleTimeoutMs: 60,
+        fetch: stallThenOk(
+          [stalledBody([])],
+          okBody([sseFrame([deltaFrame("It is sunny.")]), sseFrame([deltaFrame("", "stop")])]),
+        ),
+      }),
+    });
+    harness.conversation.on("error", (payload) => errors.push(payload.error));
+
+    await speak(harness, "alice", "First attempt.");
+
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toMatch(/idle for 60ms/);
+    // The stalled generation was finalized with nothing streamed.
+    let gens = await harness.persistence.listGenerations("conv-1");
+    expect(gens[0]!.status).toBe("completed");
+    expect(gens[0]!.text).toBe("");
+
+    // A fresh turn hits the healthy response and completes normally.
+    await speak(harness, "alice", "Second attempt.");
+    gens = await harness.persistence.listGenerations("conv-1");
+    expect(gens.at(-1)!.status).toBe("completed");
+    expect(gens.at(-1)!.text).toBe("It is sunny.");
+
+    // No state duplication: the answer appears exactly once.
+    const transcript = await harness.persistence.listTranscript("conv-1");
+    const agentLines = transcript.filter((e) => e.speakerKind === "agent");
+    expect(agentLines.map((e) => e.text)).toEqual(["It is sunny."]);
+  });
+
+  test("a stall after text deltas keeps the partial text; the retry does not duplicate it", async () => {
+    const harness = await setup({
+      script: async function* () {},
+      llm: new OpenRouterLLM({
+        apiKey: "test",
+        idleTimeoutMs: 60,
+        fetch: stallThenOk(
+          [stalledBody([sseFrame([deltaFrame("Partial answer ")])])],
+          okBody([sseFrame([deltaFrame("Full answer.")]), sseFrame([deltaFrame("", "stop")])]),
+        ),
+      }),
+    });
+
+    await speak(harness, "alice", "First.");
+    let gens = await harness.persistence.listGenerations("conv-1");
+    expect(gens[0]!.status).toBe("completed");
+    expect(gens[0]!.text).toBe("Partial answer ");
+
+    await speak(harness, "alice", "Second.");
+    gens = await harness.persistence.listGenerations("conv-1");
+    expect(gens.at(-1)!.text).toBe("Full answer.");
+
+    const transcript = await harness.persistence.listTranscript("conv-1");
+    const agentLines = transcript.filter((e) => e.speakerKind === "agent");
+    expect(agentLines.map((e) => e.text)).toEqual(["Partial answer ", "Full answer."]);
+  });
+
+  test("a stall after tool-call deltas does not execute the tool", async () => {
+    let toolRuns = 0;
+    let toolCallEvents = 0;
+    const getWeather = new Tool({
+      name: "get_weather",
+      description: "Get the weather for a city.",
+      execute: async () => {
+        toolRuns++;
+        return "sunny";
+      },
+    });
+    const toolCallFrame = JSON.stringify({
+      choices: [
+        {
+          delta: {
+            tool_calls: [
+              { index: 0, id: "call_1", function: { name: "get_weather", arguments: '{"city":"paris"}' } },
+            ],
+          },
+          finish_reason: null,
+        },
+      ],
+    });
+    const harness = await setup({
+      tools: [getWeather],
+      script: async function* () {},
+      llm: new OpenRouterLLM({
+        apiKey: "test",
+        idleTimeoutMs: 60,
+        fetch: stallThenOk(
+          // Tool-call deltas with NO terminating finish_reason frame, then silence.
+          [stalledBody([sseFrame([toolCallFrame])])],
+          okBody([sseFrame([deltaFrame("Here is the weather.")]), sseFrame([deltaFrame("", "stop")])]),
+        ),
+      }),
+    });
+    harness.conversation.on("tool-call", () => toolCallEvents++);
+
+    await speak(harness, "alice", "First.");
+
+    // The safety invariant: without the terminating frame the adapter never
+    // emits the tool call, so the application never executes it.
+    expect(toolCallEvents).toBe(0);
+    expect(toolRuns).toBe(0);
+    expect(harness.conversation.pendingToolCalls).toHaveLength(0);
+
+    // The fresh turn recovers normally and still does not fire the tool.
+    await speak(harness, "alice", "Second.");
+    expect(toolCallEvents).toBe(0);
+    expect(toolRuns).toBe(0);
+    const gens = await harness.persistence.listGenerations("conv-1");
+    expect(gens.at(-1)!.text).toBe("Here is the weather.");
+  });
+
+  test("periodic bytes keep a slow stream alive; a tighter idle timeout still trips", async () => {
+    const spacedBody = (frames: string[], gapMs: number): ReadableStream<Uint8Array> => {
+      const encoder = new TextEncoder();
+      return new ReadableStream<Uint8Array>({
+        async start(controller) {
+          for (const frame of frames) {
+            await Bun.sleep(gapMs);
+            controller.enqueue(encoder.encode(frame));
+          }
+          controller.close();
+        },
+      });
+    };
+    const frames = [
+      sseFrame([deltaFrame("He")]),
+      sseFrame([deltaFrame("llo")]),
+      sseFrame([deltaFrame(" world.")]),
+      sseFrame([deltaFrame("", "stop")]),
+    ];
+
+    // 30ms gaps stay under a 100ms watchdog: bytes keep arriving, no trip.
+    const patient = await setup({
+      script: async function* () {},
+      llm: new OpenRouterLLM({
+        apiKey: "test",
+        idleTimeoutMs: 100,
+        fetch: async () => new Response(spacedBody(frames, 30), { status: 200 }),
+      }),
+    });
+    const errors: Error[] = [];
+    patient.conversation.on("error", (payload) => errors.push(payload.error));
+    await speak(patient, "alice", "Slow but alive.");
+    expect(errors).toHaveLength(0);
+    const gens = await patient.persistence.listGenerations("conv-1");
+    expect(gens[0]!.text).toBe("Hello world.");
+
+    // The same stream trips a 20ms watchdog: the config knob decides.
+    const impatient = await setup({
+      script: async function* () {},
+      llm: new OpenRouterLLM({
+        apiKey: "test",
+        idleTimeoutMs: 20,
+        fetch: async () => new Response(spacedBody(frames, 30), { status: 200 }),
+      }),
+    });
+    const impatientErrors: Error[] = [];
+    impatient.conversation.on("error", (payload) => impatientErrors.push(payload.error));
+    await speak(impatient, "alice", "Slow again.");
+    expect(impatientErrors).toHaveLength(1);
+    expect(impatientErrors[0]!.message).toMatch(/idle for 20ms/);
+  });
+
+  test("interrupt during a stall cancels cleanly and the next turn works", async () => {
+    const harness = await setup({
+      script: async function* () {},
+      llm: new OpenRouterLLM({
+        apiKey: "test",
+        idleTimeoutMs: 10_000, // outlives the test — interrupt must win
+        fetch: stallThenOk(
+          [stalledBody([])],
+          okBody([sseFrame([deltaFrame("Recovered.")]), sseFrame([deltaFrame("", "stop")])]),
+        ),
+      }),
+    });
+
+    harness.conversation.listen({ userId: "alice", audio: new Uint8Array([1]) });
+    harness.stt.sessions.at(-1)!.emitFinal("Tell me something.");
+    const deadline = Date.now() + 2_000;
+    while ((await harness.persistence.listGenerations("conv-1")).length === 0) {
+      if (Date.now() > deadline) throw new Error("generation never started");
+      await Bun.sleep(10);
+    }
+
+    harness.conversation.interrupt();
+    await harness.orchestrator.whenIdle();
+
+    const gens = await harness.persistence.listGenerations("conv-1");
+    expect(gens[0]!.status).toBe("cancelled");
+
+    await speak(harness, "alice", "Now answer normally.");
+    const after = await harness.persistence.listGenerations("conv-1");
+    expect(after.at(-1)!.status).toBe("completed");
+    expect(after.at(-1)!.text).toBe("Recovered.");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// History windowing: bounds the conversation history an LLM request carries,
+// so provider TTFT (which grows with input) stays in the fast regime.
+// ---------------------------------------------------------------------------
+
+describe("history windowing", () => {
+  const turn = (n: number) => `User turn number ${n}.`;
+  const reply = (n: number) => `Assistant reply ${n}.`;
+
+  /** user/assistant turns 1..n, oldest first. */
+  const historyOf = (n: number): LLMMessage[] => {
+    const messages: LLMMessage[] = [];
+    for (let i = 1; i <= n; i++) {
+      messages.push({ role: "user", content: turn(i) });
+      messages.push({ role: "assistant", content: reply(i) });
+    }
+    return messages;
+  };
+
+  test("keeps everything when there are fewer user turns than the window", () => {
+    const history = historyOf(3);
+    expect(windowHistory(history, { maxTurns: 5, maxChars: 10_000 })).toEqual(history);
+  });
+
+  test("keeps only the most recent user turns (plus their replies)", () => {
+    const windowed = windowHistory(historyOf(7), { maxTurns: 3, maxChars: 10_000 });
+    expect(windowed.map((m) => m.content)).toEqual([
+      turn(5),
+      reply(5),
+      turn(6),
+      reply(6),
+      turn(7),
+      reply(7),
+    ]);
+  });
+
+  test("the character bound drops oldest whole messages but never the current turn", () => {
+    // Every turn is ~25 chars; a 90-char bound fits about 3 turns.
+    const windowed = windowHistory(historyOf(7), { maxTurns: 5, maxChars: 90 });
+    expect(windowed.map((m) => m.content)).toEqual([
+      turn(6),
+      reply(6),
+      turn(7),
+      reply(7),
+    ]);
+    // The current turn (the last user message) always survives.
+    expect(windowed.at(-1)!.content).toBe(reply(7));
+  });
+
+  test("an empty history stays empty", () => {
+    expect(windowHistory([], { maxTurns: 5, maxChars: 4_000 })).toEqual([]);
+  });
+
+  test("the orchestrator sends only the windowed history to the LLM", async () => {
+    const harness = await setup({
+      script: respond("Ok."),
+      historyWindow: { maxTurns: 3, maxChars: 10_000 },
+    });
+    // Six turns: the first three must fall out of the window.
+    for (let i = 1; i <= 6; i++) {
+      await speak(harness, "alice", turn(i));
+    }
+    const lastRequest = harness.llm.requests.at(-1)!;
+    const contents = lastRequest.messages.map((m) => m.content);
+    // (history messages are "al: <text>\n\nAdditional context: …", so prefix-match)
+    const has = (prefix: string) => contents.some((c) => c.startsWith(prefix));
+    expect(has("al: " + turn(4))).toBe(true);
+    expect(has("al: " + turn(6))).toBe(true);
+    expect(has("al: " + turn(1))).toBe(false);
+    expect(has("al: " + turn(2))).toBe(false);
+    expect(has("al: " + turn(3))).toBe(false);
+  });
+
+  test("historyWindow: false sends the full history", async () => {
+    const harness = await setup({
+      script: respond("Ok."),
+      historyWindow: false,
+    });
+    for (let i = 1; i <= 6; i++) {
+      await speak(harness, "alice", turn(i));
+    }
+    const lastRequest = harness.llm.requests.at(-1)!;
+    expect(lastRequest.messages.some((m) => m.content.startsWith("al: " + turn(1)))).toBe(true);
   });
 });

@@ -12,12 +12,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **OpenRouter LLM adapter** — `OpenRouterLLM` routes through any model on the OpenRouter marketplace over a shared OpenAI-compatible streaming engine (now also backing DeepSeek), with app attribution headers (`X-Title: pipeflow`, `HTTP-Referer` defaulting to `https://moureau.dev`).
 - **Provider timeline hook** — both LLM adapters accept an `onTiming` callback (`request-start` / `headers` / `first-chunk`) so application delay, network/queue delay, and model TTFT can be separated (`bun scripts/latency-profile.ts` now reports the decomposition).
 - **Structured clarification** — the `delegate` tool gains a `clarify` action: the coordination declares the missing details in a `missing` array, and the framework renders and speaks one batched question for all of them (instead of one question per missing detail, model-permitting).
+- **History windowing** — the orchestrator bounds the conversation history each LLM request carries (`historyWindow`, default `{ maxTurns: 5, maxChars: 4000 }`), since provider TTFT grows with input size. Measured on nova: an 8KB history cost ~850ms of pre-first-byte latency; windowing it back to ~5 turns restored the ~430ms regime.
+- **Provider token usage** — both LLM adapters accept an `onUsage` callback receiving the provider-reported prompt/completion tokens (`bun scripts/latency-profile.ts` now reports tokens per scenario, with a local estimate to expose schema/system-prompt overhead).
 - **Deterministic question budget** — `clarify` and `user` question rounds are capped per coordination run at `maxQuestionRounds` (default 2, carried across suspensions); past the cap the coordination states reasonable assumptions and completes. The real-model clarify e2e went from 24.6s / 8 generations (and 60s+ timeouts) to ~5s / bounded rounds.
 
 ### Fixed
 
 - **Provider failures surface as errors** — the OpenAI-compatible streaming engine now emits an `error` event when a provider returns HTTP 200 with `finish_reason: "error"`/`"content_filter"` (e.g. gemini models via OpenRouter), instead of silently completing with an empty generation.
+- **Stalled streams abort instead of hanging** — an `idleTimeoutMs` watchdog (default 8s) cancels a provider stream that delivers no data, closing the connection and surfacing a clear error. Protects against the observed failure where a model emits its full decision (e.g. a tool call) and the stream then never terminates (OpenRouter/nova showed ~28s stalls). Raise `idleTimeoutMs` for providers with slow first tokens.
 - **Errored coordinations finalize their generation** — an LLM failure inside a coordination run previously left a dangling `streaming` generation in persistence; it is now completed (with the error surfaced via the `error` event), matching the agent path.
+- **Tool calls are emitted exactly once** — the streaming engine no longer re-emits a tool call when a provider repeats the `finish_reason: "tool_calls"` chunk (gemini does this via OpenRouter), which previously caused a double `resolveToolCall` in the application.
 - **Clarify e2e no longer hard-fails on slow models** — the chain test reports a stall gracefully instead of timing out the whole suite.
 
 ## [0.0.1] - 2026-08-16

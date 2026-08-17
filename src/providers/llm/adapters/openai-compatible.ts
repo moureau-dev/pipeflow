@@ -1,4 +1,9 @@
-import type { LLMEvent, LLMRequest, LLMStreamTimingCallback } from "../types";
+import type {
+  LLMEvent,
+  LLMRequest,
+  LLMStreamTimingCallback,
+  LLMUsageCallback,
+} from "../types";
 import type { FetchLike } from "../../shared";
 
 interface DeltaToolCall {
@@ -12,6 +17,7 @@ interface ChatCompletionChunk {
     delta?: { content?: string | null; tool_calls?: DeltaToolCall[] };
     finish_reason?: string | null;
   }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number };
 }
 
 export interface OpenAICompatibleStreamParams {
@@ -31,6 +37,18 @@ export interface OpenAICompatibleStreamParams {
   label: string;
   /** Optional provider-timeline hook (see `LLMStreamTimingPoint`). */
   onTiming?: LLMStreamTimingCallback;
+  /**
+   * Abort the stream if no data arrives for this long (default 8000ms).
+   * Protects against providers whose connection goes silent after the model
+   * has already produced its output (e.g. a tool call that is never followed
+   * by a terminating frame).
+   */
+  idleTimeoutMs?: number;
+  /**
+   * Called with the provider-reported token usage when the stream includes
+   * it (OpenRouter sends usage in the final chunk).
+   */
+  onUsage?: LLMUsageCallback;
 }
 
 /**
@@ -41,8 +59,20 @@ export interface OpenAICompatibleStreamParams {
 export async function* openAICompatibleStream(
   params: OpenAICompatibleStreamParams,
 ): AsyncGenerator<LLMEvent> {
-  const { baseUrl, apiKey, model, fetchImpl, request, signal, extraHeaders, extraBody, label, onTiming } =
-    params;
+  const {
+    baseUrl,
+    apiKey,
+    model,
+    fetchImpl,
+    request,
+    signal,
+    extraHeaders,
+    extraBody,
+    label,
+    onTiming,
+    idleTimeoutMs,
+    onUsage,
+  } = params;
 
   onTiming?.("request-start");
   const response = await fetchImpl(`${baseUrl}/chat/completions`, {
@@ -77,6 +107,9 @@ export async function* openAICompatibleStream(
       stream: true,
       temperature: request.temperature,
       max_tokens: request.maxTokens,
+      // Ask the provider to include usage in the final chunk so token
+      // accounting (and latency-vs-tokens curves) are possible.
+      stream_options: { include_usage: true },
       ...extraBody,
     }),
     signal,
@@ -94,9 +127,24 @@ export async function* openAICompatibleStream(
   // Tool calls arrive fragmented across chunks and are reassembled by
   // index before being emitted once the stream signals `tool_calls`.
   const toolCalls = new Map<number, { id: string; name: string; arguments: string }>();
+  // After the content finishes (finish_reason), keep reading briefly so the
+  // provider-reported usage chunk — which arrives right after — is captured.
+  let contentFinished = false;
+  let finishAt = 0;
+  let sawUsage = false;
+  let toolCallsEmitted = false;
 
-  for await (const chunk of parseSSE(response.body, signal, onTiming)) {
+  for await (const chunk of parseSSE(response.body, signal, onTiming, idleTimeoutMs, label)) {
     const choice = chunk.choices?.[0];
+
+    if (chunk.usage && (chunk.usage.prompt_tokens ?? 0) > 0) {
+      sawUsage = true;
+      finishAt = 0;
+      onUsage?.({
+        promptTokens: chunk.usage.prompt_tokens ?? 0,
+        completionTokens: chunk.usage.completion_tokens ?? 0,
+      });
+    }
     if (!choice) continue;
 
     const delta = choice.delta;
@@ -113,7 +161,7 @@ export async function* openAICompatibleStream(
       toolCalls.set(index, accumulated);
     }
 
-    if (choice.finish_reason === "tool_calls") {
+    if (choice.finish_reason === "tool_calls" && !toolCallsEmitted) {
       for (const call of toolCalls.values()) {
         yield {
           type: "tool_call",
@@ -122,13 +170,15 @@ export async function* openAICompatibleStream(
           arguments: call.arguments,
         };
       }
-      break;
-    }
-    // Some providers (e.g. gemini models via OpenRouter) return HTTP 200 with
-    // an empty body and finish_reason "error"/"content_filter" instead of a
-    // real failure. Surface it as an error event rather than silently
-    // completing with an empty generation.
-    if (choice.finish_reason === "error" || choice.finish_reason === "content_filter") {
+      toolCallsEmitted = true;
+      contentFinished = true;
+    } else if (choice.finish_reason === "stop") {
+      contentFinished = true;
+    } else if (choice.finish_reason === "error" || choice.finish_reason === "content_filter") {
+      // Some providers (e.g. gemini models via OpenRouter) return HTTP 200
+      // with an empty body and finish_reason "error"/"content_filter"
+      // instead of a real failure. Surface it as an error event rather than
+      // silently completing with an empty generation.
       yield {
         type: "error",
         error: new Error(
@@ -138,8 +188,13 @@ export async function* openAICompatibleStream(
       };
       break;
     }
-    if (choice.finish_reason === "stop") {
-      break;
+
+    if (contentFinished) {
+      if (sawUsage) break; // usage captured — no need to wait for [DONE]
+      if (finishAt === 0) finishAt = Date.now();
+      // Grace for providers that send finish_reason but never [DONE] or
+      // usage: proceed after a short wait instead of stalling the run.
+      if (Date.now() - finishAt > 500) break;
     }
   }
 
@@ -155,17 +210,57 @@ async function* parseSSE(
   body: ReadableStream<Uint8Array>,
   signal: AbortSignal,
   onTiming?: LLMStreamTimingCallback,
+  idleTimeoutMs = 8_000,
+  label = "LLM",
 ): AsyncGenerator<ChatCompletionChunk> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
   let firstChunkEmitted = false;
 
+  // `reader.read()` bounded by an idle timeout: if no bytes arrive within
+  // `idleTimeoutMs`, cancel the connection and fail the stream. Only bytes
+  // reset the timer — a connection that stays open but silent still trips it.
+  const readWithTimeout = (): Promise<Awaited<ReturnType<typeof reader.read>>> => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        if (timer !== undefined) clearTimeout(timer);
+        signal.removeEventListener("abort", onAbort);
+      };
+      const onAbort = () => {
+        cleanup();
+        reject(new DOMException("The operation was aborted.", "AbortError"));
+      };
+      reader.read().then(
+        (result) => {
+          cleanup();
+          resolve(result);
+        },
+        (error) => {
+          cleanup();
+          reject(error);
+        },
+      );
+      timer = setTimeout(() => {
+        cleanup();
+        // Cancel the reader so the underlying connection is actually closed.
+        void reader.cancel().catch(() => {});
+        reject(
+          new Error(
+            `${label} stream idle for ${idleTimeoutMs}ms — no data received; aborting the stalled stream`,
+          ),
+        );
+      }, idleTimeoutMs);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+  };
+
   while (true) {
     if (signal.aborted) {
       throw new DOMException("The operation was aborted.", "AbortError");
     }
-    const { done, value } = await reader.read();
+    const { done, value } = await readWithTimeout();
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
 

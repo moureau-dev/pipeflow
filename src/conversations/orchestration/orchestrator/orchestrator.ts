@@ -187,9 +187,10 @@ Decide the best next step and take exactly one:
 - delegate to one or more agents ("agents"), each with a self-contained prompt
   describing exactly what to do and any context they need;
 - pass the work to another coordination ("coordination");
-- ask the user a clarifying question ("user") when the request is ambiguous or
+- ask the user for clarification ("user") when the request is ambiguous or
   missing critical information — speak the question naturally, as part of your
-  narration;
+  narration. When several details are obviously missing, batch up to 1-3
+  related questions into one turn instead of asking one at a time;
 - answer directly ("complete") when you have everything you need.
 
 When you delegate, briefly narrate what you are doing, wait for the results,

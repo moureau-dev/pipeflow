@@ -83,6 +83,10 @@ Coordination A resumes → completes
 
 - Coordinations run on the orchestrator's shared LLM (or a per-coordination
   `llm` override); agents keep their own.
+- `understand` asks clarifying questions directly in its own loop —
+  clarification is inlined, not a separate stage. A standalone `clarify`
+  coordination (`buildClarifyPrompt`) exists for apps that want to delegate
+  questioning to a dedicated unit; both batch up to 1-3 questions per turn.
 - Extra coordinations are registered by name via the orchestrator's
   `coordinations` option — e.g. `{ clarify: { prompt: buildClarifyPrompt() } }`
   — and any coordination can delegate to them with

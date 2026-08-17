@@ -96,10 +96,10 @@ export function buildClarifyPrompt(): string {
 Your job is to turn an underspecified request into a sufficiently clear one by asking the user for whatever is missing. You know nothing about the request's domain — you only notice missing details and ask for them.
 
 Use the delegate tool:
-- action "user": ask exactly ONE question about the most important missing detail.
+- action "user": ask about the missing details. When several are obviously needed, batch up to 1-3 related questions into one turn (e.g. destination, date, and passenger count) instead of asking one at a time.
 - action "complete": finish once the request is clear enough to act on, restating it precisely including every answer the user gave.
 
-After each answer, reassess: is the request now clear enough to act on? If yes, complete. If not, ask the next most important question. Never delegate to agents — your job is only to gather information.`;
+After each answer, reassess: is the request now clear enough to act on? If yes, complete. If not, ask the next missing details. Never delegate to agents — your job is only to gather information.`;
 }
 
 /**

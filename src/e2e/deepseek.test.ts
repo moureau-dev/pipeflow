@@ -433,14 +433,18 @@ describe("DeepSeek e2e (requires DEEPSEEK_API_KEY)", () => {
     expect(questionGen.text).toMatch(/\?/); // the chain parked on a question
 
     // 2. Answer, and keep answering follow-up questions until the chain
-    // completes with a final, non-question answer. A real clarify loop asks
-    // one question at a time, so this may take several rounds (bounded).
+    // completes with a final, non-question answer. The model may ask one
+    // question at a time despite the batching guidance, so the cap is
+    // generous; failure here means the chain genuinely never completed.
     const answers = [
       "London, tomorrow.",
       "From Paris.",
       "Two passengers.",
       "Economy class.",
       "Morning flight.",
+      "A window seat.",
+      "No return date.",
+      "Budget airline.",
     ];
     let finalText = "";
     for (let round = 0; round < answers.length; round++) {
@@ -474,6 +478,12 @@ describe("DeepSeek e2e (requires DEEPSEEK_API_KEY)", () => {
       .at(-1)!;
     reportTimeline("clarify question hop", turn!, questionGen);
     reportTimeline("clarify chain (question → answer → final)", turn!, finalGen);
+    const chainGenerations = (await persistence.listGenerations(conversation.id)).filter(
+      (g) => g.kind !== "sub" && g.status === "completed",
+    );
+    console.log(
+      `clarify chain: ${chainGenerations.length} completed generations (question rounds + final)`,
+    );
   });
 
   e2e("runs a multi-tool agent with concurrent tool calls", async () => {

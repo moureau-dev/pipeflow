@@ -3,6 +3,7 @@ import { Agent } from "../../../agents/agent";
 import { Tool } from "../../../agents/tools/tools";
 import { Conversation } from "../../conversation/conversation";
 import { MemoryPersistence } from "../../../persistence/adapters/memory/memory";
+import { ConversationStream } from "../../stream/conversation-stream";
 import {
   Orchestrator,
   pickAgent,
@@ -1117,6 +1118,38 @@ describe("Orchestrator", () => {
         "Let me check both.",
         "I found a 3pm flight and your calendar is free.",
       ]);
+    });
+
+    test("delegated specialists do not terminate the top-level reply stream", async () => {
+      const harness = await setupRoster({
+        coordinatorScript: understandThatDelegates([
+          { agent: "Travel Agent", prompt: "Find flights." },
+        ]),
+        scripts: { "Travel Agent": respond("Flight at 3pm.") },
+      });
+
+      const stream = new ConversationStream(harness.conversation);
+      const objects: Record<string, unknown>[] = [];
+      const fragments: string[] = [];
+      stream.whenItem("text", (fragment) => fragments.push(fragment as string));
+      stream.whenObjectDone((object) => objects.push(object));
+
+      await speak(harness, "alice", "Book a flight.");
+
+      // One top-level object spanning the delegation: narration before the
+      // tool call and the merged answer after. The specialist's own
+      // transcript (an agent-kind transcript) must not terminate it — only
+      // the coordinator's generation completion does.
+      expect(objects).toHaveLength(1);
+      expect(objects[0]).toEqual({
+        agent: "Jarvis",
+        text: ["Let me check both. ", "I found a 3pm flight and your calendar is free."],
+      });
+      expect(fragments).toEqual([
+        "Let me check both. ",
+        "I found a 3pm flight and your calendar is free.",
+      ]);
+      stream.dispose();
     });
 
     test("runs dispatched specialists in parallel", async () => {

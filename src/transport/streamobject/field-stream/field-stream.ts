@@ -10,15 +10,22 @@
  *   - StreamObject       — consumes an AsyncIterable of text chunks (JSON source)
  *   - ConversationStream — consumes conversation events (provider-native source)
  *
+ * Lifecycle, per object:
+ *
+ *   STREAMING ──emitObject──▶ DONE
+ *       │
+ *       ├──cancel()──▶ CANCELLED
+ *       └──fail()────▶ FAILED
+ *
+ * Exactly-once: within an object, completion handlers fire at most once per
+ * boundary and never after a terminal state (events after DONE/CANCELLED/
+ * FAILED are dropped). cancel() is idempotent. Multi-object sources call
+ * beginObject() to start each object.
+ *
  * `when` means completion, not mutation: handlers never see chunks or source
  * format. Handlers are invoked synchronously at the completion boundary and
  * never block the producer; async handlers run concurrently and their
- * rejections are routed to onError. `cancel()` stops the stream (and invokes
- * the optional onCancel hook, e.g. to abort the producer's request).
- *
- * Performance note: this layer runs at completion frequency (a handful of
- * events per object), not token frequency. Dispatch is a plain array indexed
- * by field number; the Sets hold user-registered callbacks.
+ * rejections are routed to onError.
  *
  * Errors: delivered to onError handlers when registered; otherwise the
  * subclass decides (StreamObject rejects start(); callers of `fail()` get the
@@ -38,6 +45,8 @@ export interface FieldStreamOptions {
   onCancel?: () => void;
 }
 
+type ObjectState = "streaming" | "done" | "cancelled" | "failed";
+
 export abstract class FieldStream {
   protected readonly schema: Schema;
   private readonly fieldHandlers: Array<Set<FieldHandler> | undefined>;
@@ -45,8 +54,9 @@ export abstract class FieldStream {
   private readonly objectHandlers = new Set<ObjectDoneHandler>();
   private readonly errorHandlers = new Set<ErrorHandler>();
   private readonly onCancel: (() => void) | undefined;
+  /** Stream-level: set by cancel(); consumed by source-driven subclasses. */
   protected cancelled = false;
-  private objectDone = false;
+  private objectState: ObjectState = "streaming";
 
   constructor(schema: Schema, options: FieldStreamOptions = {}) {
     this.schema = schema;
@@ -81,42 +91,65 @@ export abstract class FieldStream {
     return this;
   }
 
+  /**
+   * Abort the current object and stop the producer (idempotent). The object
+   * will not complete; already-delivered items remain valid partial state.
+   */
   cancel(): void {
-    if (this.cancelled) return;
+    if (this.cancelled) return; // idempotent
     this.cancelled = true;
+    this.cancelObject();
     this.onCancel?.();
+  }
+
+  /** Start a new object's lifecycle (multi-object sources call this per object). */
+  protected beginObject(): void {
+    this.objectState = "streaming";
   }
 
   /** Emit a completed field value (subclasses call this at the completion boundary). */
   protected emitField(field: number, value: FieldValue): void {
+    if (this.objectState !== "streaming") return;
     const handlers = this.fieldHandlers[field];
     if (handlers === undefined) return;
     for (const handler of handlers) this.fire(handler, [value]);
   }
 
-  /** True once the object has completed (or been cancelled). */
-  protected get objectCompleted(): boolean {
-    return this.objectDone;
-  }
-
   /** Emit a completed array item. */
   protected emitItem(field: number, index: number, value: ScalarValue): void {
+    if (this.objectState !== "streaming") return;
     const handlers = this.itemHandlers[field];
     if (handlers === undefined) return;
     for (const handler of handlers) this.fire(handler, [value, index]);
   }
 
-  /** Complete the object from an event list (materializes and fires whenObjectDone once). */
+  /**
+   * Complete the current object: materializes and fires whenObjectDone exactly
+   * once (a second call, or a call after cancel/fail, is ignored).
+   */
   protected emitObject(events: Event[]): void {
-    if (this.objectDone) return;
-    this.objectDone = true;
+    if (this.objectState !== "streaming") return;
+    this.objectState = "done";
     const object = materializeObject(this.schema, events);
     for (const handler of this.objectHandlers) this.fire(handler, [object]);
   }
 
-  /** Route a source/adapter failure to onError, or rethrow when unhandled. */
+  /** Abort the current object without completing it (idempotent). */
+  protected cancelObject(): void {
+    if (this.objectState === "streaming") this.objectState = "cancelled";
+  }
+
+  /**
+   * Route a source/adapter failure to onError (or rethrow when unhandled) and
+   * mark the current object failed.
+   */
   protected fail(error: unknown): void {
+    if (this.objectState === "streaming") this.objectState = "failed";
     this.dispatchError(toError(error));
+  }
+
+  protected get objectCompleted(): boolean {
+    return this.objectState === "done";
   }
 
   protected resolveIndex(field: string | string[]): number {

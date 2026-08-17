@@ -1,21 +1,33 @@
 /**
  * ConversationStream — the conversation's semantic reply stream.
  *
- * Turns a Conversation's event stream (LLM text deltas + generation
+ * Turns a Conversation's event stream (LLM text fragments + generation
  * completion) into FieldStream completion events: consumers act on partial
  * reply text without waiting for the reply to finish.
  *
  *   const replies = new ConversationStream(conversation);
- *   replies.whenItem("text", (chunk, i) => render(chunk));   // per LLM delta
- *   replies.when("agent", (agent) => showSpeaker(agent));    // at first delta
- *   replies.whenObjectDone((reply) => finalize(reply));      // generation done
+ *   replies.whenItem("text", (fragment, i) => render(fragment));
+ *   replies.when("agent", (agent) => showSpeaker(agent));
+ *   replies.whenObjectDone((reply) => finalize(reply));
+ *   replies.cancel(); // aborts the current generation (interrupts the LLM)
  *
  * One semantic object per top-level generation (agent or coordination
- * reply). The `text` field is an array: one item per LLM delta. Interruptions
- * and provider errors end the object without completing it — items already
- * delivered remain valid partial state.
+ * reply). The `text` field is an ordered sequence of completed text
+ * fragments — semantically "the next fragment of the reply arrived", not
+ * "whatever happened to be inside a provider SSE packet". Fragment sizes are
+ * an implementation detail of the producer and may be coalesced later.
+ *
+ * Lifecycle per reply:
+ *
+ *   first fragment ──▶ STREAMING ──generation-complete──▶ DONE
+ *                          ├──cancel()/interrupt──▶ CANCELLED
+ *                          └──provider error──────▶ FAILED
+ *
+ * Each boundary fires at most once; no completion event fires after a
+ * terminal state. Interruptions and errors leave already-delivered fragments
+ * as valid partial state. Delegated sub-generation results do not terminate
+ * the top-level reply — only the top-level generation's completion does.
  */
-
 import { FieldStream } from "../../transport/streamobject/field-stream/field-stream";
 import type {
   Event,
@@ -36,7 +48,9 @@ export class ConversationStream extends FieldStream {
   private active: { agentName: string | undefined; items: string[] } | null = null;
 
   constructor(conversation: Conversation) {
-    super(REPLY_SCHEMA);
+    // cancel() interrupts the conversation, which stops the current
+    // generation's LLM through the orchestrator. Idempotent.
+    super(REPLY_SCHEMA, { onCancel: () => conversation.interrupt() });
     this.unsubscribers = [
       conversation.on("text-delta", ({ text, agentName }) => this.onDelta(text, agentName)),
       conversation.on("generation-complete", () => this.completeReply()),
@@ -52,6 +66,7 @@ export class ConversationStream extends FieldStream {
 
   private onDelta(text: string, agentName: string | undefined): void {
     if (this.active === null) {
+      this.beginObject();
       this.active = { agentName, items: [] };
       if (agentName !== undefined) this.emitField(AGENT_FIELD, agentName);
     }
@@ -74,6 +89,7 @@ export class ConversationStream extends FieldStream {
   }
 
   private abortReply(): void {
-    this.active = null; // delivered items remain valid partial state
+    this.active = null;
+    this.cancelObject(); // delivered fragments remain valid partial state
   }
 }

@@ -58,6 +58,31 @@ describe("OpenRouterLLM", () => {
     ]);
   });
 
+  test("surfaces reasoning deltas before content on thinking models", async () => {
+    const llm = new OpenRouterLLM({
+      apiKey: "test-key",
+      fetch: async () =>
+        sseResponse(
+          sseFrame(
+            JSON.stringify({ choices: [{ delta: { reasoning: "think. " }, finish_reason: null }] }),
+          ),
+          sseFrame(deltaChunk("answer")),
+          sseFrame(deltaChunk(""), "stop"),
+        ),
+    });
+
+    const events = [];
+    for await (const event of llm.stream(basicRequest)) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      { type: "delta", content: "", reasoning: "think. " },
+      { type: "delta", content: "answer" },
+      { type: "done" },
+    ]);
+  });
+
   test("surfaces an empty 200 with finish_reason error/content_filter as an error event", async () => {
     // Providers such as gemini on OpenRouter occasionally return HTTP 200
     // with no output and finish_reason "error" — a silent empty completion

@@ -35,6 +35,33 @@ function makeLlm(): LLM {
   return new DeepSeekLLM({ apiKey: apiKey!, model: "deepseek-v4-flash" });
 }
 
+function modelLabel(): string {
+  if (openRouterKey) return process.env.LLM_MODEL ?? "google/gemini-2.5-flash-lite (openrouter)";
+  return "deepseek-v4-flash";
+}
+
+// Records the first occurrence of each semantic boundary relative to t0, so
+// the live run doubles as a per-model TTF report (first fragment, generation
+// complete, object done, transcript).
+function makeMarks(t0: number): {
+  marks: Record<string, number>;
+  mark: (name: string) => void;
+} {
+  const marks: Record<string, number> = {};
+  const mark = (name: string) => {
+    if (!(name in marks)) marks[name] = Date.now() - t0;
+  };
+  return { marks, mark };
+}
+
+function printTimeline(label: string, marks: Record<string, number>, extra: string[]): void {
+  console.log(`\n  model: ${modelLabel()} — ${label}`);
+  for (const [name, at] of Object.entries(marks)) {
+    console.log(`    ${name.padEnd(20)} @ ${at}ms`);
+  }
+  for (const line of extra) console.log(`    ${line}`);
+}
+
 async function makeConversation(): Promise<{
   conversation: Awaited<ReturnType<Conversations["create"]>>;
 }> {
@@ -61,11 +88,19 @@ describe("ConversationStream live (requires DEEPSEEK_API_KEY or OPENROUTER_API_K
     // transcript after both.
     const order: string[] = [];
     let agentTranscript = "";
-    conversation.on("text-delta", () => order.push("text-delta"));
-    conversation.on("generation-complete", () => order.push("generation-complete"));
+    const { marks, mark } = makeMarks(Date.now());
+    conversation.on("text-delta", () => {
+      mark("text-delta");
+      order.push("text-delta");
+    });
+    conversation.on("generation-complete", () => {
+      mark("generation-complete");
+      order.push("generation-complete");
+    });
     conversation.on("transcript", ({ entry }) => {
       if (entry.speakerKind === "agent") {
         agentTranscript = entry.text;
+        mark("transcript");
         order.push("transcript");
       }
     });
@@ -76,14 +111,17 @@ describe("ConversationStream live (requires DEEPSEEK_API_KEY or OPENROUTER_API_K
     let agent: string | undefined;
     stream.when("agent", (value) => {
       agent = value as string;
+      mark("agent");
       order.push("agent");
     });
     stream.whenItem("text", (fragment) => {
       fragments.push(fragment as string);
+      mark("first-fragment");
       order.push("item");
     });
     stream.whenObjectDone((object) => {
       objects.push(object);
+      mark("object-done");
       order.push("object");
     });
 
@@ -118,6 +156,13 @@ describe("ConversationStream live (requires DEEPSEEK_API_KEY or OPENROUTER_API_K
 
     stream.dispose();
     await conversation.stop();
+
+    // Per-key timing: when each semantic boundary became available, so the
+    // whole-reply vs first-fragment overlap is visible per model.
+    printTimeline("whole reply", marks, [
+      `overlap (object-done − first-fragment): ${marks["object-done"]! - marks["first-fragment"]!}ms`,
+      `fragments: ${fragments.length} (${joined.length} chars)`,
+    ]);
   });
 
   e2e("cancel() interrupts the live generation at the first fragment", async () => {
@@ -127,7 +172,11 @@ describe("ConversationStream live (requires DEEPSEEK_API_KEY or OPENROUTER_API_K
       const { conversation } = await makeConversation();
       const stream = new ConversationStream(conversation);
       let objects = 0;
-      stream.whenItem("text", () => {
+      const { marks, mark } = makeMarks(Date.now());
+      const fragments: string[] = [];
+      stream.whenItem("text", (fragment) => {
+        fragments.push(fragment as string);
+        mark("first-fragment");
         if (objects === 0) stream.cancel(); // enough: abort the generation
       });
       stream.whenObjectDone(() => {
@@ -149,6 +198,7 @@ describe("ConversationStream live (requires DEEPSEEK_API_KEY or OPENROUTER_API_K
         const generation = conversation.state.currentGeneration;
         if (generation !== null && generation.status === "streaming") sawStreaming = true;
         if (sawStreaming && generation === null) {
+          mark("generation-gone");
           outcome = "cancelled";
           break;
         }
@@ -164,6 +214,12 @@ describe("ConversationStream live (requires DEEPSEEK_API_KEY or OPENROUTER_API_K
 
       if (outcome === "cancelled" && objects === 0) {
         expect(objects).toBe(0);
+        // When the first fragment arrived (the cancel moment) and when the
+        // producer actually stopped (generation disappeared).
+        printTimeline("cancellation", marks, [
+          `generation stopped ${marks["generation-gone"]! - marks["first-fragment"]!}ms after cancel`,
+          `consumed before cancel: ${fragments.join("").length} chars`,
+        ]);
         return;
       }
       // The reply may have finished before the first fragment's handler ran

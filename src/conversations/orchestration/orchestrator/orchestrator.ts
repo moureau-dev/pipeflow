@@ -1221,6 +1221,9 @@ export class Orchestrator {
   // -------------------------------------------------------------------------
 
   private feedDelta(delta: string): void {
+    // Reasoning deltas carry no speakable text; skip them so empty text never
+    // reaches the text-delta event or the TTS chunker.
+    if (delta.length === 0) return;
     // First-token latency for the in-flight generation (agent or
     // coordination — both stream narration through here).
     this.conversation.noteTiming("firstToken");

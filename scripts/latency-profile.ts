@@ -314,77 +314,41 @@ function report(
 }
 
 // ---------------------------------------------------------------------------
-// Raw probe: does the provider stream reasoning tokens before content?
+// Thinking probe: does the provider stream reasoning tokens before content?
 // ---------------------------------------------------------------------------
 
 async function probeThinking(): Promise<void> {
-  const apiKey = openRouterKey;
-  const baseUrl = apiKey ? "https://openrouter.ai/api/v1" : "https://api.deepseek.com";
-  if (!apiKey) return;
   const start = performance.now();
-  let firstChunkAt: number | undefined;
   let firstReasoningAt: number | undefined;
   let firstContentAt: number | undefined;
   let reasoningChars = 0;
   let contentChars = 0;
-
-  const response = await fetch(`${baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: MODEL,
-      messages: [{ role: "user", content: PROMPT }],
-      stream: true,
-    }),
-  });
-  if (!response.ok || !response.body) {
-    console.log(`\nprobe: request failed (${response.status})`);
-    return;
-  }
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const frames = buffer.split(/\r?\n\r?\n/);
-    buffer = frames.pop() ?? "";
-    for (const frame of frames) {
-      for (const line of frame.split(/\r?\n/)) {
-        if (!line.startsWith("data:")) continue;
-        const data = line.slice(5).trim();
-        if (data === "[DONE]") break;
-        try {
-          const chunk = JSON.parse(data) as {
-            choices?: Array<{ delta?: Record<string, unknown> }>;
-          };
-          const delta = chunk.choices?.[0]?.delta ?? {};
-          if (firstChunkAt === undefined) firstChunkAt = performance.now() - start;
-          const reasoning = (delta.reasoning ?? delta.reasoning_content) as string | undefined;
-          if (typeof reasoning === "string" && reasoning.length > 0) {
-            if (firstReasoningAt === undefined) firstReasoningAt = performance.now() - start;
-            reasoningChars += reasoning.length;
-          }
-          const content = delta.content as string | undefined;
-          if (typeof content === "string" && content.length > 0) {
-            if (firstContentAt === undefined) firstContentAt = performance.now() - start;
-            contentChars += content.length;
-          }
-        } catch {
-          // ignore
-        }
+  try {
+    // Same adapter path as the scenarios — one SSE parser, watchdog included.
+    // Reasoning-only deltas arrive as `{ type: "delta", content: "", reasoning }`.
+    for await (const event of llm.stream({ messages: [{ role: "user", content: PROMPT }] })) {
+      if (event.type !== "delta") continue;
+      if (event.reasoning !== undefined && event.reasoning.length > 0) {
+        if (firstReasoningAt === undefined) firstReasoningAt = performance.now() - start;
+        reasoningChars += event.reasoning.length;
+      }
+      if (event.content.length > 0) {
+        if (firstContentAt === undefined) firstContentAt = performance.now() - start;
+        contentChars += event.content.length;
       }
     }
+  } catch (error) {
+    console.log(`\nprobe: request failed (${error instanceof Error ? error.message : String(error)})`);
+    return;
   }
 
   console.log(`\nthinking probe (${MODEL})`);
-  console.log(`  first SSE chunk   ${firstChunkAt !== undefined ? `${Math.round(firstChunkAt)}ms` : "—"}`);
-  console.log(`  first reasoning   ${firstReasoningAt !== undefined ? `${Math.round(firstReasoningAt)}ms (${reasoningChars} chars)` : "none"}`);
-  console.log(`  first content     ${firstContentAt !== undefined ? `${Math.round(firstContentAt)}ms (${contentChars} chars)` : "—"}`);
+  console.log(
+    `  first reasoning   ${firstReasoningAt !== undefined ? `${Math.round(firstReasoningAt)}ms (${reasoningChars} chars)` : "none"}`,
+  );
+  console.log(
+    `  first content     ${firstContentAt !== undefined ? `${Math.round(firstContentAt)}ms (${contentChars} chars)` : "—"}`,
+  );
   if (firstReasoningAt !== undefined && firstContentAt !== undefined) {
     console.log(
       `  → thinking before content: ~${Math.round(firstContentAt - firstReasoningAt)}ms of reasoning`,

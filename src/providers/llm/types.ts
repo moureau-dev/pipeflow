@@ -55,7 +55,16 @@ export interface LLMUsage {
 export type LLMUsageCallback = (usage: LLMUsage) => void;
 
 export type LLMEvent =
-  | { type: "delta"; content: string }
+  | {
+      type: "delta";
+      content: string;
+      /**
+       * Reasoning/thinking tokens, when the provider streams them separately
+       * from content (OpenRouter `reasoning`, DeepSeek `reasoning_content`).
+       * Omitted when the model does not emit reasoning.
+       */
+      reasoning?: string;
+    }
   | { type: "tool_call"; id: string; name: string; arguments: string }
   | { type: "done" }
   | { type: "error"; error: Error };

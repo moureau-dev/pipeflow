@@ -14,7 +14,14 @@ interface DeltaToolCall {
 
 interface ChatCompletionChunk {
   choices?: Array<{
-    delta?: { content?: string | null; tool_calls?: DeltaToolCall[] };
+    delta?: {
+      content?: string | null;
+      tool_calls?: DeltaToolCall[];
+      // OpenRouter normalizes reasoning tokens to `reasoning`; DeepSeek uses
+      // `reasoning_content`. Both are surfaced on the delta event.
+      reasoning?: string | null;
+      reasoning_content?: string | null;
+    };
     finish_reason?: string | null;
   }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
@@ -148,8 +155,17 @@ export async function* openAICompatibleStream(
     if (!choice) continue;
 
     const delta = choice.delta;
-    if (delta?.content) {
-      yield { type: "delta", content: delta.content };
+    const content = delta?.content ?? "";
+    // Thinking models stream reasoning before content; emit it so consumers
+    // can measure thinking time (and optionally surface it). Reasoning-only
+    // chunks carry empty content.
+    const reasoning = (delta?.reasoning ?? delta?.reasoning_content) ?? "";
+    if (content.length > 0 || reasoning.length > 0) {
+      yield {
+        type: "delta",
+        content,
+        ...(reasoning.length > 0 ? { reasoning } : {}),
+      };
     }
 
     for (const tc of delta?.tool_calls ?? []) {

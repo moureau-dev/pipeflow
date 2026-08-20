@@ -238,8 +238,16 @@ function delegateActionSchema(
 /**
  * The tool definition that lets a coordination's LLM choose the next execution
  * target: agents (one or more, in parallel), another coordination, the user,
- * or completion. The parameters are generated from the zod schema, flattened
- * so any provider's tool-calling accepts them.
+ * or completion.
+ *
+ * The parameters are deliberately FLAT (action enum + optional fields) even
+ * though the parser enforces a discriminated union per action. Why: Amazon
+ * Bedrock (nova) ignores `oneOf` in tool input schemas, which makes the tool
+ * effectively empty — the model stops calling it and answers directly instead
+ * (measured: 0/2 tool calls and ~5k-token essays vs reliable ~1s calls with
+ * the flat shape). The flat schema works across every provider tested; the
+ * discriminated contract is enforced when the call is parsed, and an invalid
+ * combination costs one bounded retry rather than a broken tool.
  */
 export function delegateToolDefinition(
   agents: readonly Agent[],

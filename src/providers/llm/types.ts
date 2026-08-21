@@ -46,10 +46,32 @@ export interface LLMToolDefinition {
  * - `prompted` — no `tools`; the same envelope is requested by appending an
  *   instruction to the last user message. The universal fallback: works on
  *   any chat model, at the cost of extraction/repair/retry, higher token
- *   use, and tail-latency risk (models sometimes wrap or wander before the
- *   JSON).
+ *   use, and tail-latency risk.
  */
 export type ToolMode = "native" | "envelope" | "prompted";
+
+/**
+ * A string that may also be one of the branded literal values — e.g. any
+ * model id, with the favorites offered for autocomplete. The `& {}` on the
+ * string side stops TypeScript from absorbing the literals into `string`
+ * (the reverse arrangement — `string | (T & {})` — collapses and loses the
+ * literals).
+ */
+export type StringOr<T extends string> = T | (string & {});
+
+/** Models measured as usable; offered for autocomplete where a model id is taken. */
+export const FAVORITE_MODELS = [
+  "meta-llama/llama-4-scout",
+  "google/gemini-2.5-flash-lite",
+  "amazon/nova-micro-v1",
+  "amazon/nova-lite-v1",
+  "inclusionai/ling-3.0-flash",
+  "sao10k/l3-lunaris-8b",
+  "openai/gpt-oss-20b",
+] as const;
+
+/** Any model id, with the favorites offered for autocomplete. */
+export type FavoriteModel = StringOr<(typeof FAVORITE_MODELS)[number]>;
 
 export interface LLMRequest {
   messages: LLMMessage[];

@@ -1,4 +1,5 @@
 import type {
+  FavoriteModel,
   LLM,
   LLMEvent,
   LLMRequest,
@@ -14,9 +15,10 @@ export interface OpenRouterOptions {
   /**
    * Any model hosted on OpenRouter, e.g. `anthropic/claude-sonnet-4`.
    * Defaults to `openrouter/auto`, which routes the request to the best
-   * available model for its shape.
+   * available model for its shape. The measured `FAVORITE_MODELS`
+   * autocomplete; any model id is accepted.
    */
-  model?: string;
+  model?: FavoriteModel;
   /** Defaults to `https://openrouter.ai/api/v1`. */
   baseUrl?: string;
   /**

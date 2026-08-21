@@ -1,6 +1,7 @@
 import type { LLM, LLMRequest } from "./types";
 
 export type {
+  FavoriteModel,
   LLM,
   LLMEvent,
   LLMMessage,
@@ -8,7 +9,10 @@ export type {
   LLMToolCall,
   LLMToolDefinition,
   LLMRequest,
+  StringOr,
 } from "./types";
+
+export { FAVORITE_MODELS } from "./types";
 
 /**
  * Stream only the text deltas of an LLM generation, rethrowing any

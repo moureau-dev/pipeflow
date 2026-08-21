@@ -16,29 +16,6 @@ import { z } from "zod";
 import type { FetchLike } from "../../shared";
 import type { LLMMessage, LLMToolDefinition, ToolMode } from "../types";
 
-/**
- * A string that may also be one of the branded literal values — e.g. any
- * model id, with the favorites offered for autocomplete. The `& {}` on the
- * string side stops TypeScript from absorbing the literals into `string`
- * (the reverse arrangement — `string | (T & {})` — collapses and loses the
- * literals).
- */
-export type StringOr<T extends string> = T | (string & {});
-
-/** Models worth benchmarking: the ones that measure as usable. */
-export const FAVORITE_MODELS = [
-  "meta-llama/llama-4-scout",
-  "google/gemini-2.5-flash-lite",
-  "amazon/nova-micro-v1",
-  "amazon/nova-lite-v1",
-  "inclusionai/ling-3.0-flash",
-  "sao10k/l3-lunaris-8b",
-  "openai/gpt-oss-20b",
-] as const;
-
-/** Any model id, with the favorites offered for autocomplete. */
-export type FavoriteModel = StringOr<(typeof FAVORITE_MODELS)[number]>;
-
 export interface ToolModeBenchmarkOptions {
   apiKey: string;
   model: string;

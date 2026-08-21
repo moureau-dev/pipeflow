@@ -4,7 +4,8 @@
 //   RUNS=3 MODELS="meta-llama/llama-4-scout,amazon/nova-micro-v1" \
 //     bun scripts/envelope-vs-native.ts
 
-import { FAVORITE_MODELS, ToolModeBenchmark } from "../src/providers/llm/toolmode/toolmode";
+import { FAVORITE_MODELS } from "../src/providers/llm/types";
+import { ToolModeBenchmark } from "../src/providers/llm/toolmode/toolmode";
 
 const apiKey = process.env.OPENROUTER_API_KEY;
 if (!apiKey) {

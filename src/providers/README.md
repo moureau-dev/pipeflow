@@ -6,7 +6,7 @@ their adapters.
 ```text
 providers/
 ├── llm/       language models          (interface + adapters/deepseek, openrouter)
-├── stt/       speech-to-text           (interface + adapters/deepgram)
+├── stt/       speech-to-text           (interface + adapters/deepgram, openrouter)
 └── tts/       text-to-speech           (interface + adapters/kokoro)
 ```
 
@@ -114,7 +114,7 @@ interface STT {
 
 `start()` opens a streaming session; audio is fed in with `write()` and
 transcripts are reported via `partial`/`final` events. Adapters:
-`DeepgramSTT`.
+`DeepgramSTT` (streaming, with interim results) and `OpenRouterSTT` (batch).
 
 ### Conversational STT (Deepgram Flux)
 
@@ -141,6 +141,34 @@ Notes:
   designed-for integration point.
 - Don't pass `language` with `flux-general-en`; `flux-general-multi` uses
   `language_hint` for language biasing (not yet exposed by the adapter).
+
+### Batch STT (OpenRouter Whisper)
+
+OpenRouter's `/api/v1/audio/transcriptions` endpoint is batch-only — it
+transcribes a complete audio clip and returns the text; there is no streaming
+and no interim results. `OpenRouterSTT` adapts the streaming `STTSession`
+contract to it: the session buffers the raw audio, wraps each utterance in a
+WAV header, and transcribes a clip once `silenceMs` (default 800ms) of silence
+has elapsed since the last audio:
+
+```ts
+const stt = new OpenRouterSTT({
+  apiKey: process.env.OPENROUTER_API_KEY,
+  model: "openai/whisper-large-v3-turbo",
+});
+```
+
+Notes:
+
+- Assumes linear16 PCM (mono, `sampleRate`, default 16 kHz) and wraps it in a
+  minimal WAV container before upload.
+- A turn arrives whole at the `final` event once its clip has been
+  transcribed — no `partial` events (batch API). Turn latency is
+  `silenceMs` + transcription time.
+- `end()` transcribes any trailing buffer; `cancel()` drops buffered audio and
+  aborts in-flight requests. Clips are transcribed serially, in order.
+- Providers time out after 60s per request, so keep utterances short — which
+  silence-based segmentation does by construction.
 
 ## TTS
 

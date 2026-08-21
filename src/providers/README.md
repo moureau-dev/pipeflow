@@ -69,9 +69,11 @@ differs.
   cost of extraction/repair/retry, higher token use, and tail-latency risk.
 
 The right mode is a property of the model's endpoints, not the caller.
-`ToolModeBenchmark` measures it:
+`ToolModeBenchmark` (from `@moureau/pipeflow/providers/llm`) measures it:
 
 ```ts
+import { ToolModeBenchmark } from "@moureau/pipeflow/providers/llm";
+
 const bench = new ToolModeBenchmark({ apiKey, model, runs: 10 });
 const { fastest, cheapest, report } = await bench.run();
 // report.native.time.p90 — decision-latency percentiles

@@ -40,6 +40,50 @@ An optional `onUsage` callback receives the provider-reported prompt/completion
 token counts (OpenRouter includes usage in the stream's final chunk), so
 latency-vs-tokens curves are measurable.
 
+Deltas may carry an optional `reasoning` field when the provider streams
+thinking tokens separately from content (OpenRouter `reasoning`, DeepSeek
+`reasoning_content`) — `bun scripts/latency-profile.ts` probes whether a
+model thinks before it speaks, through the same adapter path.
+
+### Tool-call encodings (`toolMode`)
+
+`LLMRequest.toolMode` — or the equivalent adapter option, which a request's
+explicit `toolMode` overrides — selects how tool calls are encoded on the
+wire. The semantic contract is identical in every mode: callers pass `tools`
+and consume the same `delta` / `tool_call` / `done` events, only the encoding
+differs.
+
+- `native` (default) — the provider's tool-calling contract: `tools` in the
+  request, `tool_calls` in the stream. Streaming deltas and provider-enforced
+  argument schemas, at the price of wire overhead: the provider expands the
+  schema into its native tool format, billing measurably more prompt tokens
+  (often 5-10x the cost of the modes below).
+- `envelope` — no `tools`; `response_format` forces the model to emit a JSON
+  envelope (`{ answer?, calls: [{ name, arguments }] }`) that the adapter
+  translates back into `tool_call` events. Endpoint-guaranteed JSON and a
+  lean prompt (dramatically cheaper per decision), but nothing is actionable
+  until the whole envelope arrives — no streaming deltas. Only for endpoints
+  that support structured outputs.
+- `prompted` — the same envelope requested by an instruction appended to the
+  last user message. The universal fallback: works on any chat model, at the
+  cost of extraction/repair/retry, higher token use, and tail-latency risk.
+
+The right mode is a property of the model's endpoints, not the caller.
+`ToolModeBenchmark` measures it:
+
+```ts
+const bench = new ToolModeBenchmark({ apiKey, model, runs: 10 });
+const { fastest, cheapest, report } = await bench.run();
+// report.native.time.p90 — decision-latency percentiles
+// report.envelope.cost    — median $ per decision
+```
+
+The benchmark runs all three modes through the real adapter path and reports
+per-mode availability, p50/p90/p99 decision latency, median cost (from
+OpenRouter registry pricing), and the fastest/cheapest working modes.
+`bun scripts/envelope-vs-native.ts` wraps it as a CLI; `scripts/tool-envelope-probe.ts`
+checks a model's envelope validity in one run when onboarding.
+
 ## STT
 
 ```ts

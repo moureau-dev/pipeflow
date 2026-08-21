@@ -7,7 +7,7 @@ their adapters.
 providers/
 ├── llm/       language models          (interface + adapters/deepseek, openrouter)
 ├── stt/       speech-to-text           (interface + adapters/deepgram, openrouter)
-└── tts/       text-to-speech           (interface + adapters/kokoro)
+└── tts/       text-to-speech           (interface + adapters/kokoro, openrouter)
 ```
 
 The orchestrator works against the **interfaces**, never vendor APIs — swap a
@@ -211,6 +211,28 @@ Notes:
 - For the lowest latency, Together AI also exposes a realtime WebSocket
   endpoint (`/v1/audio/speech/websocket`) — a designed-for adapter, not yet
   shipped.
+
+### OpenRouter TTS
+
+`OpenRouterTTS` synthesizes through `/api/v1/audio/speech` (OpenAI-compatible)
+and returns raw audio bytes, re-chunked so they can be played as they arrive:
+
+```ts
+const tts = new OpenRouterTTS({
+  apiKey: process.env.OPENROUTER_API_KEY,
+  model: "fish-audio/s2.1-pro-free:free", // free variant; pass fish-audio/s2.1-pro for the paid tier
+});
+```
+
+Notes:
+
+- Output is `pcm` by default (OpenRouter's recommendation for realtime
+  pipelines); pass `format: "mp3"` in the request for compressed output.
+- `voice` defaults to `"default"` (valid for fish models) and is overridable
+  per request; voice support varies by model and provider.
+- Priced per character of input text; `speed` is passed through where the
+  provider supports it and silently ignored elsewhere.
+- `stop()` aborts the in-flight synthesis.
 
 ## Usage
 

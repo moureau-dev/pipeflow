@@ -4,6 +4,7 @@ import type {
   LLMToolDefinition,
   LLMStreamTimingCallback,
   LLMUsageCallback,
+  ToolMode,
 } from "../types";
 import type { FetchLike } from "../../shared";
 
@@ -45,6 +46,12 @@ export interface OpenAICompatibleStreamParams {
   label: string;
   /** Optional provider-timeline hook (see `LLMStreamTimingPoint`). */
   onTiming?: LLMStreamTimingCallback;
+  /**
+   * Default tool encoding for requests that do not set `toolMode`
+   * themselves (the request's `toolMode` wins when present). Useful for
+   * models whose endpoints lack native tool calling.
+   */
+  toolMode?: ToolMode;
   /**
    * Abort the stream if no data arrives for this long (default 8000ms).
    * Protects against providers whose connection goes silent after the model
@@ -123,7 +130,9 @@ export async function* openAICompatibleStream(
   } = params;
 
   onTiming?.("request-start");
-  const toolMode = request.toolMode ?? "native";
+  // Precedence: the per-request override wins, then the adapter default, then
+  // native.
+  const toolMode = request.toolMode ?? params.toolMode ?? "native";
   const usesEnvelope = toolMode !== "native" && (request.tools?.length ?? 0) > 0;
   const response = await fetchImpl(`${baseUrl}/chat/completions`, {
     method: "POST",

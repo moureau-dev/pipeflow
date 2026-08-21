@@ -4,6 +4,7 @@ import type {
   LLMRequest,
   LLMStreamTimingCallback,
   LLMUsageCallback,
+  ToolMode,
 } from "../../types";
 import type { FetchLike } from "../../../shared";
 import { openAICompatibleStream } from "../openai-compatible";
@@ -35,6 +36,12 @@ export interface OpenRouterOptions {
   idleTimeoutMs?: number;
   /** Called with the provider-reported token usage (when included). */
   onUsage?: LLMUsageCallback;
+  /**
+   * Default tool encoding for requests that don't set `toolMode` (the
+   * request's `toolMode` wins). For models whose endpoints lack native tool
+   * calling — e.g. `sao10k/l3-lunaris-8b` -> `"envelope"`.
+   */
+  toolMode?: ToolMode;
 }
 
 /**
@@ -53,6 +60,7 @@ export class OpenRouterLLM implements LLM {
   private readonly onTiming: LLMStreamTimingCallback | undefined;
   private readonly idleTimeoutMs: number;
   private readonly onUsage: LLMUsageCallback | undefined;
+  private readonly toolMode: ToolMode | undefined;
   private readonly streams = new Set<AbortController>();
 
   constructor(options: OpenRouterOptions) {
@@ -67,6 +75,7 @@ export class OpenRouterLLM implements LLM {
     this.onTiming = options.onTiming;
     this.idleTimeoutMs = options.idleTimeoutMs ?? 8_000;
     this.onUsage = options.onUsage;
+    this.toolMode = options.toolMode;
   }
 
   /** Cancel every in-flight stream (parallel sub-generations included). */
@@ -98,6 +107,7 @@ export class OpenRouterLLM implements LLM {
         onTiming: this.onTiming,
         idleTimeoutMs: this.idleTimeoutMs,
         onUsage: this.onUsage,
+        toolMode: this.toolMode,
       });
     } finally {
       this.streams.delete(controller);

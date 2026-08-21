@@ -306,6 +306,50 @@ describe("OpenRouterLLM", () => {
     expect(events[1]).toEqual({ type: "done" });
   });
 
+  test("adapter toolMode applies by default and the request override wins", async () => {
+    const bodies: string[] = [];
+    const llm = new OpenRouterLLM({
+      apiKey: "test-key",
+      toolMode: "envelope",
+      fetch: async (_url, init) => {
+        bodies.push(String(init?.body));
+        return sseResponse(
+          sseFrame(
+            JSON.stringify({
+              choices: [{ delta: { content: '{"answer":"ok"}' }, finish_reason: null }],
+            }),
+          ),
+          sseFrame(deltaChunk(""), "stop"),
+        );
+      },
+    });
+
+    // No request toolMode: the adapter default (envelope) applies.
+    for await (const _ of llm.stream({
+      messages: [{ role: "user", content: "hi" }],
+      tools: [weatherTool],
+    })) {
+      // consume
+    }
+    // Explicit native: the request override beats the adapter default.
+    for await (const _ of llm.stream({
+      messages: [{ role: "user", content: "hi" }],
+      tools: [weatherTool],
+      toolMode: "native",
+    })) {
+      // consume
+    }
+
+    const [defaulted, overridden] = bodies.map((b) => JSON.parse(b)) as [
+      Record<string, unknown>,
+      Record<string, unknown>,
+    ];
+    expect(defaulted.tools).toBeUndefined();
+    expect(defaulted.response_format).toBeDefined();
+    expect(overridden.tools).toEqual([{ type: "function", function: weatherTool }]);
+    expect(overridden.response_format).toBeUndefined();
+  });
+
   test("sends attribution headers and a custom model when configured", async () => {
     let capturedInit: RequestInit | undefined;
     const llm = new OpenRouterLLM({

@@ -40,7 +40,7 @@ export async function complete(llm: LLM, request: LLMRequest): Promise<string> {
   return text;
 }
 
-export { DeepSeekLLM, OpenRouterLLM } from "./adapters/index";
+export { ClaudeLLM, DeepSeekLLM, OpenAILLM, OpenRouterLLM } from "./adapters/index";
 export { ToolModeBenchmark } from "./toolmode";
 export type {
   ToolModeBenchmarkOptions,

@@ -24,7 +24,10 @@ interface LLM {
 
 `stream()` yields `delta` (text tokens), `tool_call` (with JSON-encoded
 arguments), `done`, or `error` events. Transport failures are thrown from the
-generator. Adapters: `DeepSeekLLM`, `OpenRouterLLM` (both OpenAI-compatible).
+generator. Adapters: `DeepSeekLLM`, `OpenRouterLLM`, `OpenAILLM` (all
+OpenAI-compatible) and `ClaudeLLM` (Anthropic Messages API — its own
+streamer: `tool_use` content blocks with `input_json_delta` reassembly,
+`tool_result` blocks for tool results, required `max_tokens`).
 
 Both adapters accept an optional `onTiming` callback that fires at
 `request-start`, `headers`, and `first-chunk` — enough to split application

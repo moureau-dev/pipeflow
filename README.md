@@ -685,7 +685,7 @@ conversation layer.
 The project currently ships adapters for:
 
 * **STT:** Deepgram
-* **LLM:** DeepSeek, OpenRouter
+* **LLM:** DeepSeek, OpenRouter, OpenAI, Claude (Anthropic)
 * **TTS:** Kokoro
 
 Providers are configured with their own credentials — Pipeflow itself does

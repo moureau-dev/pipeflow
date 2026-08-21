@@ -12,8 +12,11 @@ export interface OpenRouterTTSOptions {
    */
   model?: string;
   /**
-   * Default voice. Fish models accept `"default"`; overridable per request
-   * via `TTSRequest.voice`. Voice support varies by model and provider.
+   * Default voice, sent when the request carries none. Omitted entirely when
+   * unset: providers with a built-in default voice (e.g. fish-audio) accept
+   * omission, and some reject an explicit `voice` outright — while providers
+   * that require one (e.g. OpenAI TTS) need it set. Voice support varies by
+   * model and provider.
    */
   voice?: string;
   /** Size of the audio chunks yielded from the response stream. Default 8192. */
@@ -46,7 +49,7 @@ export class OpenRouterTTS implements TTS {
     this.apiKey = options.apiKey;
     this.baseUrl = (options.baseUrl ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
     this.model = options.model ?? "fish-audio/s2.1-pro-free:free";
-    this.voice = options.voice ?? "default";
+    this.voice = options.voice ?? "";
     this.chunkSize = options.chunkSize ?? 8192;
     this.fetchImpl = options.fetch ?? fetch;
   }
@@ -68,7 +71,10 @@ export class OpenRouterTTS implements TTS {
       const body: Record<string, unknown> = {
         model: this.model,
         input: request.text,
-        voice: request.voice ?? this.voice,
+        // Voice is only sent when configured: fish-audio (the default model)
+        // rejects an explicit voice with a 400, while models like OpenAI TTS
+        // require one.
+        ...(request.voice ?? this.voice ? { voice: request.voice ?? this.voice } : {}),
         // OpenRouter supports mp3 and pcm only; anything else (or
         // unspecified) maps to pcm, the lower-latency realtime format.
         response_format: request.format === "mp3" ? "mp3" : "pcm",

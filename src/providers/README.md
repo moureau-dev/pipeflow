@@ -228,8 +228,9 @@ Notes:
 
 - Output is `pcm` by default (OpenRouter's recommendation for realtime
   pipelines); pass `format: "mp3"` in the request for compressed output.
-- `voice` defaults to `"default"` (valid for fish models) and is overridable
-  per request; voice support varies by model and provider.
+- `voice` is only sent when configured: fish-audio (the default) provides its
+  own default voice and **rejects an explicit `voice` with a 400**, while
+  models like OpenAI TTS require one — set the option for those.
 - Priced per character of input text; `speed` is passed through where the
   provider supports it and silently ignored elsewhere.
 - `stop()` aborts the in-flight synthesis.

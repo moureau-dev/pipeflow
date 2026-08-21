@@ -40,9 +40,10 @@ describe("OpenRouterTTS", () => {
     expect(body).toMatchObject({
       model: "fish-audio/s2.1-pro-free:free",
       input: "Hello world",
-      voice: "default",
       response_format: "pcm",
     });
+    // Voice is omitted unless configured — the default fish model rejects it.
+    expect(body.voice).toBeUndefined();
     const headers = new Headers(calls[0]!.init.headers);
     expect(headers.get("authorization")).toBe("Bearer test-key");
     expect(headers.get("content-type")).toContain("application/json");
@@ -55,12 +56,12 @@ describe("OpenRouterTTS", () => {
     await collect(tts, "hi");
     await collect(tts, "hi again");
     let body = JSON.parse(calls[0]!.init.body as string) as Record<string, unknown>;
-    expect(body.voice).toBe("default");
+    expect(body.voice).toBeUndefined();
     expect(body.response_format).toBe("pcm");
     expect(body.speed).toBeUndefined();
 
     body = JSON.parse(calls[1]!.init.body as string) as Record<string, unknown>;
-    expect(body.voice).toBe("default");
+    expect(body.voice).toBeUndefined();
 
     // A request with explicit voice/speed/format overrides.
     const tts2 = new OpenRouterTTS({ apiKey: "test-key", voice: "alex", fetch });

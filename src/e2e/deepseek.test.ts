@@ -236,6 +236,11 @@ describe("LLM e2e (requires DEEPSEEK_API_KEY or OPENROUTER_API_KEY)", () => {
     const getWeather = new Tool({
       name: "get_weather",
       description: "Get the current weather for a city.",
+      parameters: {
+        type: "object",
+        properties: { city: { type: "string", description: "The city to look up." } },
+        required: ["city"],
+      },
       execute: async ({ city }) => `sunny, 24°C in ${city}`,
     });
 
@@ -654,11 +659,23 @@ describe("LLM e2e (requires DEEPSEEK_API_KEY or OPENROUTER_API_KEY)", () => {
     const getWeather = new Tool({
       name: "get_weather",
       description: "Get the current weather for a city.",
+      parameters: {
+        type: "object",
+        properties: { city: { type: "string", description: "The city to look up." } },
+        required: ["city"],
+      },
       execute: timed("get_weather", 500),
     });
     const searchFlights = new Tool({
       name: "search_flights",
       description: "Find available flights to a destination.",
+      parameters: {
+        type: "object",
+        properties: {
+          destination: { type: "string", description: "The destination city." },
+        },
+        required: ["destination"],
+      },
       execute: timed("search_flights", 800),
     });
 
@@ -728,6 +745,11 @@ describe("LLM e2e (requires DEEPSEEK_API_KEY or OPENROUTER_API_KEY)", () => {
     const getWeather = new Tool({
       name: "get_weather",
       description: "Get the current weather for a city.",
+      parameters: {
+        type: "object",
+        properties: { city: { type: "string", description: "The city to look up." } },
+        required: ["city"],
+      },
       execute: async ({ city }: { city: string }) => {
         const startedAt = Date.now();
         await Bun.sleep(600);
@@ -738,6 +760,11 @@ describe("LLM e2e (requires DEEPSEEK_API_KEY or OPENROUTER_API_KEY)", () => {
     const getLocalTime = new Tool({
       name: "get_local_time",
       description: "Get the current local time for a city.",
+      parameters: {
+        type: "object",
+        properties: { city: { type: "string", description: "The city to look up." } },
+        required: ["city"],
+      },
       execute: async ({ city }: { city: string }) => {
         const startedAt = Date.now();
         await Bun.sleep(600);

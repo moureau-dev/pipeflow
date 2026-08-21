@@ -255,16 +255,20 @@ async function runOnce(llm: LLM, request: LLMRequest): Promise<Run> {
         run.firstDelta = at;
       } else if (event.type === "tool_call" && run.toolCall === undefined) {
         run.toolCall = at;
-        try {
-          const parsed = JSON.parse(event.arguments) as { action?: unknown };
-          if (
-            typeof parsed?.action !== "string" ||
-            !DELEGATE_ACTIONS.includes(parsed.action)
-          ) {
+        // The delegate-validity check only applies to delegate calls — the
+        // weather tool (and any other tool) legitimately has no `action`.
+        if (event.name === "delegate") {
+          try {
+            const parsed = JSON.parse(event.arguments) as { action?: unknown };
+            if (
+              typeof parsed?.action !== "string" ||
+              !DELEGATE_ACTIONS.includes(parsed.action)
+            ) {
+              run.invalidToolCall = true;
+            }
+          } catch {
             run.invalidToolCall = true;
           }
-        } catch {
-          run.invalidToolCall = true;
         }
       } else if (event.type === "done") {
         run.done = at;

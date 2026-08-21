@@ -12,6 +12,7 @@
  */
 
 import { OpenRouterLLM } from "../adapters/openrouter/openrouter";
+import { z } from "zod";
 import type { FetchLike } from "../../shared";
 import type { LLMMessage, LLMToolDefinition, ToolMode } from "../types";
 
@@ -26,6 +27,12 @@ export interface ToolModeBenchmarkOptions {
   messages?: LLMMessage[];
   /** Probe tool (default: get_weather). */
   tools?: LLMToolDefinition[];
+  /**
+   * Validates each emitted tool call's arguments to count `correct` runs — a
+   * call that succeeds with garbage arguments (e.g. `{ "city": "?" }`) is a
+   * failed decision. Defaults to the weather probe's schema.
+   */
+  correctnessSchema?: z.ZodType;
   /** Injectable fetch implementation, mainly for tests. */
   fetch?: FetchLike;
 }
@@ -34,6 +41,8 @@ export interface ToolModeBenchmarkRun {
   /** ms to the tool call (decision latency), or to stream end when none. */
   latencyMs?: number;
   toolCall: boolean;
+  /** Every emitted call's arguments parsed cleanly and validated. */
+  correct?: boolean;
   prompt?: number;
   completion?: number;
   error?: string;
@@ -42,7 +51,7 @@ export interface ToolModeBenchmarkRun {
 /** Latency percentiles over the runs that produced a tool call. */
 export interface ToolModeTiming {
   p50: number;
-  p90: number;
+  p95: number;
   p99: number;
 }
 
@@ -53,6 +62,13 @@ export interface ToolModeReportEntry {
   time?: ToolModeTiming;
   /** How many runs produced a tool call. */
   toolCalls: number;
+  /**
+   * How many runs emitted only schema-valid calls (undefined when no
+   * `correctnessSchema` was provided).
+   */
+  correct: number | undefined;
+  /** Cost per decision that was actually correct: `cost / (correct / runs)`. */
+  effectiveCost?: number;
   /** How many runs failed outright (transport, envelope parse, …). */
   errors: number;
   /** The first run's error, when every run failed. */
@@ -86,6 +102,8 @@ const WEATHER_MESSAGES: LLMMessage[] = [
   },
   { role: "user", content: "What is the weather in Paris and Tokyo?" },
 ];
+
+const WEATHER_ARGS = z.object({ city: z.string().min(1) });
 
 function percentile(sorted: number[], p: number): number {
   if (sorted.length === 0) return Number.NaN;
@@ -124,6 +142,7 @@ export class ToolModeBenchmark {
   private readonly runs: number;
   private readonly messages: LLMMessage[];
   private readonly tools: LLMToolDefinition[];
+  private readonly correctnessSchema: z.ZodType | undefined;
   private readonly fetchImpl: FetchLike;
 
   constructor(options: ToolModeBenchmarkOptions) {
@@ -133,6 +152,7 @@ export class ToolModeBenchmark {
     this.runs = options.runs ?? 3;
     this.messages = options.messages ?? WEATHER_MESSAGES;
     this.tools = options.tools ?? [WEATHER_TOOL];
+    this.correctnessSchema = options.correctnessSchema ?? WEATHER_ARGS;
     this.fetchImpl = options.fetch ?? fetch;
   }
 
@@ -183,6 +203,7 @@ export class ToolModeBenchmark {
       const start = performance.now();
       let toolCallAt: number | undefined;
       let error: string | undefined;
+      const callArguments: string[] = [];
       try {
         for await (const event of llm.stream({
           messages: this.messages,
@@ -193,16 +214,32 @@ export class ToolModeBenchmark {
           if (event.type === "tool_call" && toolCallAt === undefined) {
             toolCallAt = performance.now() - start;
           }
+          if (event.type === "tool_call") {
+            callArguments.push(event.arguments);
+          }
           if (event.type === "error") throw event.error;
           if (event.type === "done") break;
         }
       } catch (e) {
         error = e instanceof Error ? e.message.slice(0, 120) : String(e);
       }
+      // A run is correct when every emitted call's arguments parse and
+      // validate — a call that succeeds with garbage args is a failed decision.
+      let correct: boolean | undefined;
+      if (error === undefined && callArguments.length > 0 && this.correctnessSchema !== undefined) {
+        correct = callArguments.every((raw) => {
+          try {
+            return this.correctnessSchema!.safeParse(JSON.parse(raw)).success;
+          } catch {
+            return false;
+          }
+        });
+      }
       runRows.push({
         latencyMs:
           toolCallAt ?? (error === undefined ? performance.now() - start : undefined),
         toolCall: toolCallAt !== undefined,
+        correct,
         prompt: usage.prompt,
         completion: usage.completion,
         error,
@@ -217,18 +254,29 @@ export class ToolModeBenchmark {
       .filter((r) => r.prompt !== undefined && r.completion !== undefined && pricing !== undefined)
       .map((r) => r.prompt! * pricing!.in + r.completion! * pricing!.out);
     const errors = runRows.filter((r) => r.error !== undefined);
+    const correctRuns = runRows.filter((r) => r.correct === true).length;
+    const correct = this.correctnessSchema !== undefined ? correctRuns : undefined;
+    const cost = median(costs);
+    // Price per decision that was actually usable: the median decision cost
+    // divided by the correct rate.
+    const effectiveCost =
+      correct !== undefined && correct > 0 && cost !== undefined
+        ? cost / (correct / runRows.length)
+        : undefined;
 
     return {
-      cost: median(costs),
+      cost,
       time:
         decisionLatencies.length > 0
           ? {
               p50: percentile(decisionLatencies, 0.5),
-              p90: percentile(decisionLatencies, 0.9),
+              p95: percentile(decisionLatencies, 0.95),
               p99: percentile(decisionLatencies, 0.99),
             }
           : undefined,
       toolCalls: runRows.filter((r) => r.toolCall).length,
+      correct,
+      effectiveCost,
       errors: errors.length,
       error: errors[0]?.error,
       runs: runRows,

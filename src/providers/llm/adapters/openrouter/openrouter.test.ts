@@ -285,7 +285,10 @@ describe("OpenRouterLLM", () => {
 
     const events = [];
     for await (const event of llm.stream({
-      messages: [{ role: "user", content: "weather in Rome?" }],
+      messages: [
+        { role: "system", content: "You are a weather assistant." },
+        { role: "user", content: "weather in Rome?" },
+      ],
       tools: [weatherTool],
       toolMode: "prompted",
     })) {
@@ -293,12 +296,20 @@ describe("OpenRouterLLM", () => {
     }
 
     const body = JSON.parse(String(capturedInit?.body)) as {
-      messages: Array<{ content: string }>;
+      messages: Array<{ role: string; content: string }>;
       tools?: unknown;
       response_format?: unknown;
     };
     expect(body.tools).toBeUndefined();
     expect(body.response_format).toBeUndefined();
+    // The tool contract lands after the caller's system message and carries
+    // the tool name, description, and the envelope output rule.
+    expect(body.messages[0]).toEqual({ role: "system", content: "You are a weather assistant." });
+    expect(body.messages[1]!.role).toBe("system");
+    const contract = body.messages[1]!.content;
+    expect(contract).toContain("Available tools:");
+    expect(contract).toContain("- get_weather: Get the current weather for a city.");
+    expect(contract).toContain("no tool-call syntax");
     const last = body.messages.at(-1)!.content;
     expect(last).toContain("Respond with ONLY valid JSON");
     expect(last).toContain("get_weather");
@@ -380,6 +391,50 @@ describe("OpenRouterLLM", () => {
     expect(events).toHaveLength(2);
     expect(events[0]).toMatchObject({ type: "error" });
     expect(events[1]).toEqual({ type: "done" });
+  });
+
+  test("repairs an envelope whose opening bytes were dropped by the provider", async () => {
+    // Observed with llama-4-scout via OpenRouter: the stream starts mid-object
+    // but closes cleanly (the opening "{" is lost in transport).
+    const llm = new OpenRouterLLM({
+      apiKey: "test-key",
+      fetch: async () =>
+        sseResponse(
+          sseFrame(
+            JSON.stringify({
+              choices: [
+                {
+                  delta: {
+                    content:
+                      '"calls": [{"name":"get_weather","arguments":{"city":"Oslo"}}]}',
+                  },
+                  finish_reason: null,
+                },
+              ],
+            }),
+          ),
+          sseFrame(deltaChunk(""), "stop"),
+        ),
+    });
+
+    const events = [];
+    for await (const event of llm.stream({
+      messages: [{ role: "user", content: "weather in Oslo?" }],
+      tools: [weatherTool],
+      toolMode: "prompted",
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: "tool_call",
+        id: expect.any(String),
+        name: "get_weather",
+        arguments: '{"city":"Oslo"}',
+      },
+      { type: "done" },
+    ]);
   });
 
   test("adapter toolMode applies by default and the request override wins", async () => {

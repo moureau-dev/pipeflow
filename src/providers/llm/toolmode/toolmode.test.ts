@@ -121,6 +121,31 @@ describe("ToolModeBenchmark", () => {
     expect(result.fastest).not.toBeNull();
     expect(result.cheapest).not.toBeNull();
     expect(["native", "envelope", "prompted"]).toContain(result.fastest!);
+    // The mocked calls carry valid {"city":"Paris"} arguments — every run
+    // counts as correct, and the effective cost equals the raw cost.
+    for (const mode of ["native", "envelope", "prompted"] as const) {
+      expect(result.report[mode]!.correct).toBe(2);
+      expect(result.report[mode]!.effectiveCost).toBeCloseTo(860 * 0.000001 + 114 * 0.000003, 10);
+    }
+  });
+
+  test("a call with garbage arguments counts as not correct", async () => {
+    const { fetch } = makeFetch({
+      envelopeContent: '{"calls":[{"name":"get_weather","arguments":{}}]}',
+    });
+    const bench = new ToolModeBenchmark({
+      apiKey: "test-key",
+      model: MODEL,
+      runs: 2,
+      fetch,
+    });
+
+    const result = await bench.run();
+
+    const envelope = result.report.envelope!;
+    expect(envelope.toolCalls).toBe(2); // calls were emitted...
+    expect(envelope.correct).toBe(0); // ...but none validated against {city: string}
+    expect(envelope.effectiveCost).toBeUndefined(); // no correct decisions to price
   });
 
   test("a mode whose model returns prose reports an error and no timing", async () => {

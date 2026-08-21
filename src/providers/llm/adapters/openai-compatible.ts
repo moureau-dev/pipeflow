@@ -138,6 +138,23 @@ function extractEnvelope(raw: string): string | null {
 }
 
 /**
+ * System-level tool contract for `envelope`/`prompted` modes. The envelope
+ * schema itself carries only tool names + argument shapes, so without this
+ * the model never sees tool descriptions or the output rule up front — which
+ * invites prose, native tool-call syntax, or waffling instead of the envelope.
+ */
+function buildToolContract(tools: LLMToolDefinition[]): string {
+  const list = tools.map((tool) => `- ${tool.name}: ${tool.description}`).join("\n");
+  return (
+    "You have access to the following tools. When the user's request requires one, " +
+    "respond with ONLY the tool-call JSON envelope shown in the request — no prose, " +
+    "no markdown, no tool-call syntax. When no tool is needed, respond with the " +
+    'envelope\'s "answer" field.\n\nAvailable tools:\n' +
+    list
+  );
+}
+
+/**
  * Stream a request through any OpenAI-compatible `/chat/completions`
  * endpoint, reassembling fragmented tool calls and normalizing the SSE
  * stream into `LLMEvent`s. Shared by the DeepSeek and OpenRouter adapters.
@@ -165,6 +182,41 @@ export async function* openAICompatibleStream(
   // native.
   const toolMode = request.toolMode ?? params.toolMode ?? "native";
   const usesEnvelope = toolMode !== "native" && (request.tools?.length ?? 0) > 0;
+  // In envelope modes the tools are hidden from the provider, so the model
+  // never sees their descriptions (or the output rule) unless we say so.
+  // Insert the contract after the caller's system messages, where formatting
+  // rules belong.
+  const toolContract = usesEnvelope ? buildToolContract(request.tools!) : null;
+  const contractAt = request.messages.findIndex((message) => message.role !== "system");
+  const insertAt = contractAt === -1 ? request.messages.length : contractAt;
+  const wireMessages: Record<string, unknown>[] = [];
+  request.messages.forEach((message, index, all) => {
+    if (index === insertAt && toolContract !== null) {
+      wireMessages.push({ role: "system", content: toolContract });
+    }
+    const wire: Record<string, unknown> = {
+      role: message.role,
+      content: message.content,
+    };
+    if (message.name) wire.name = message.name;
+    if (message.toolCallId) wire.tool_call_id = message.toolCallId;
+    if (message.toolCalls) {
+      wire.tool_calls = message.toolCalls.map((call) => ({
+        id: call.id,
+        type: "function",
+        function: { name: call.name, arguments: call.arguments },
+      }));
+    }
+    if (toolMode === "prompted" && usesEnvelope && index === all.length - 1) {
+      // The only way to constrain output without provider support: ask
+      // the model directly, and parse/validate the result ourselves.
+      wire.content = `${message.content}\n\n${promptedEnvelopeInstruction(request.tools!)}`;
+    }
+    wireMessages.push(wire);
+  });
+  if (insertAt === request.messages.length && toolContract !== null) {
+    wireMessages.push({ role: "system", content: toolContract });
+  }
   const response = await fetchImpl(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -175,27 +227,7 @@ export async function* openAICompatibleStream(
     body: JSON.stringify({
       model,
       // LLMMessage uses camelCase; the wire format is snake_case.
-      messages: request.messages.map((message, index, all) => {
-        const wire: Record<string, unknown> = {
-          role: message.role,
-          content: message.content,
-        };
-        if (message.name) wire.name = message.name;
-        if (message.toolCallId) wire.tool_call_id = message.toolCallId;
-        if (message.toolCalls) {
-          wire.tool_calls = message.toolCalls.map((call) => ({
-            id: call.id,
-            type: "function",
-            function: { name: call.name, arguments: call.arguments },
-          }));
-        }
-        if (toolMode === "prompted" && usesEnvelope && index === all.length - 1) {
-          // The only way to constrain output without provider support: ask
-          // the model directly, and parse/validate the result ourselves.
-          wire.content = `${message.content}\n\n${promptedEnvelopeInstruction(request.tools!)}`;
-        }
-        return wire;
-      }),
+      messages: wireMessages,
       // Envelope modes hide the tools from the provider and encode them in a
       // schema the model must emit as JSON; native mode uses the provider's
       // own tool-calling contract.
@@ -350,6 +382,16 @@ export async function* openAICompatibleStream(
       if (extracted !== null) {
         try {
           envelope = JSON.parse(extracted);
+        } catch {
+          envelope = undefined;
+        }
+      }
+      if (envelope === undefined) {
+        // Some providers drop the opening bytes of the stream (observed with
+        // llama-4-scout via OpenRouter): the content starts mid-object but
+        // closes cleanly. Prepend the brace and retry.
+        try {
+          envelope = JSON.parse(`{${envelopeContent}`);
         } catch {
           envelope = undefined;
         }

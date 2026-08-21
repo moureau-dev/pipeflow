@@ -68,6 +68,14 @@ differs.
   last user message. The universal fallback: works on any chat model, at the
   cost of extraction/repair/retry, higher token use, and tail-latency risk.
 
+In `envelope`/`prompted` modes the adapter injects a system-level tool
+contract (tool names, descriptions, and the envelope output rule — without
+it the model never sees the tool descriptions, which invites prose or native
+tool-call syntax) and embeds each tool's argument schema in the envelope, so
+the model sees the same argument contract it would in native mode. Replies
+that wrap the JSON in fences or lose the opening brace in transport are
+repaired before parsing.
+
 The right mode is a property of the model's endpoints, not the caller.
 `ToolModeBenchmark` (from `@moureau/pipeflow/providers/llm`) measures it:
 
@@ -76,15 +84,20 @@ import { ToolModeBenchmark } from "@moureau/pipeflow/providers/llm";
 
 const bench = new ToolModeBenchmark({ apiKey, model, runs: 10 });
 const { fastest, cheapest, report } = await bench.run();
-// report.native.time.p90 — decision-latency percentiles
-// report.envelope.cost    — median $ per decision
+// report.native.time.p50    — decision-latency percentiles (p50/p95/p99)
+// report.envelope.cost      — median $ per decision
+// report.prompted.correct   — runs whose calls all validated
+// report.envelope.effectiveCost — $ per decision that was actually correct
 ```
 
 The benchmark runs all three modes through the real adapter path and reports
-per-mode availability, p50/p90/p99 decision latency, median cost (from
-OpenRouter registry pricing), and the fastest/cheapest working modes.
-`bun scripts/envelope-vs-native.ts` wraps it as a CLI; `scripts/tool-envelope-probe.ts`
-checks a model's envelope validity in one run when onboarding.
+per-mode availability, p50/p95/p99 decision latency, median cost (from
+OpenRouter registry pricing), correctness (each emitted call's arguments
+validated against the probe schema — a call with garbage args is a failed
+decision), and effective `$ / correct decision`. Tail percentiles are only
+meaningful at `runs` >= 10 (nearest-rank). `bun scripts/envelope-vs-native.ts`
+wraps it as a CLI; `scripts/tool-envelope-probe.ts` checks a model's envelope
+validity in one run when onboarding.
 
 ## STT
 

@@ -96,8 +96,9 @@ OpenRouter registry pricing), correctness (each emitted call's arguments
 validated against the probe schema — a call with garbage args is a failed
 decision), and effective `$ / correct decision`. Tail percentiles are only
 meaningful at `runs` >= 10 (nearest-rank). `bun scripts/envelope-vs-native.ts`
-wraps it as a CLI; `scripts/tool-envelope-probe.ts` checks a model's envelope
-validity in one run when onboarding.
+wraps it as a CLI (benchmarking `FAVORITE_MODELS` — the seven models measured
+as usable — by default, overridable with `MODELS=`); `scripts/tool-envelope-probe.ts`
+checks a model's envelope validity in one run when onboarding.
 
 ## STT
 

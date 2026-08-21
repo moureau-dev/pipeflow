@@ -4,7 +4,7 @@
 //   RUNS=3 MODELS="meta-llama/llama-4-scout,amazon/nova-micro-v1" \
 //     bun scripts/envelope-vs-native.ts
 
-import { ToolModeBenchmark } from "../src/providers/llm/toolmode/toolmode";
+import { FAVORITE_MODELS, ToolModeBenchmark } from "../src/providers/llm/toolmode/toolmode";
 
 const apiKey = process.env.OPENROUTER_API_KEY;
 if (!apiKey) {
@@ -14,10 +14,7 @@ if (!apiKey) {
 // Narrowed const so hoisted functions below see a string, not string|undefined.
 const KEY = apiKey;
 
-const MODELS = (
-  process.env.MODELS ??
-  "meta-llama/llama-4-scout,google/gemini-2.5-flash-lite,amazon/nova-micro-v1"
-).split(",");
+const MODELS = (process.env.MODELS ?? FAVORITE_MODELS.join(",")).split(",");
 const RUNS = Number(process.env.RUNS ?? 3);
 
 function fmtCost(cost: number | undefined): string {

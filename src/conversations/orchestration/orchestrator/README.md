@@ -15,12 +15,32 @@ provider for voice, or agents with an LLM for text turns), so most
 applications never construct one directly. The class is exported for power
 users via `@moureau/pipeflow/conversations/orchestration/orchestrator`.
 
+## Layout
+
+The state machine itself stays thin — lifecycle, routing, epochs, and event
+wiring — and composes focused collaborators:
+
+```text
+orchestrator/
+├── orchestrator.ts           lifecycle + routing + event wiring
+├── history/                  ConversationHistory: message log, turn-context
+│                             suffix, windowing, rehydration
+├── routing/                  pickAgent / findAddressedAgent / findAgentByName
+├── generation/               GenerationRunner: the shared LLM + tool-call loop
+├── speech/                   SpeechPipeline: delta → sentence chunker → TTS
+├── tools/                    ToolCallManager: tool-call waiters, timeouts,
+│                             cancellation
+└── coordination-runner/      CoordinationRunner: suspension/resume stack,
+                              budgets, delegation
+```
+
 ## Routing
 
 Each finalized participant turn is routed:
 
-1. **Pending coordination?** → `resumeExecution(turn)`. The user answered a
-   pending question; the parked coordination continues.
+1. **Pending coordination?** → the parked coordination resumes with this turn
+   (`CoordinationRunner.resume`). The user answered a pending question; the
+   execution continues from the suspension.
 2. **Explicitly addressed** (an agent's name or alias appears in the text), or
    a **single-agent** conversation → straight to that agent as a full
    generation.

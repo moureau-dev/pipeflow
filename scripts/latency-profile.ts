@@ -12,7 +12,7 @@
 import { OpenRouterLLM } from "../src/providers/llm/adapters/openrouter/openrouter";
 import { DeepSeekLLM } from "../src/providers/llm/adapters/deepseek/deepseek";
 import { delegateToolDefinition } from "../src/conversations/orchestration/coordination/coordination";
-import { windowHistory } from "../src/conversations/orchestration/orchestrator/orchestrator";
+import { windowHistory } from "../src/conversations/orchestration/orchestrator";
 import type {
   LLM,
   LLMRequest,

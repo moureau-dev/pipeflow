@@ -4,14 +4,8 @@ import { Tool } from "../../../agents/tools/tools";
 import { Conversation } from "../../conversation/conversation";
 import { MemoryPersistence } from "../../../persistence/adapters/memory/memory";
 import { ConversationStream } from "../../stream/conversation-stream";
-import {
-  Orchestrator,
-  pickAgent,
-  formatTimeContext,
-  formatTurnContext,
-  windowHistory,
-  type HistoryWindow,
-} from "./orchestrator";
+import { Orchestrator } from "./orchestrator";
+import type { HistoryWindow } from "./history/history";
 import { buildClarifyPrompt } from "../coordination/coordination";
 import { OpenRouterLLM } from "../../../providers/llm/adapters/openrouter/openrouter";
 import type { AudioChunk, ToolCall, UserId } from "../../types";
@@ -19,7 +13,6 @@ import type {
   LLM,
   LLMEvent,
   LLMRequest,
-  LLMMessage,
 } from "../../../providers/llm/types";
 import type { STT, STTOptions, STTSession } from "../../../providers/stt/types";
 import type { TTS, TTSRequest } from "../../../providers/tts/types";
@@ -271,34 +264,6 @@ function respond(text: string): LLMScript {
     yield { type: "done" };
   };
 }
-
-test("formatTurnContext appends time, speaker, and roster", () => {
-  const date = new Date(2026, 7, 16, 14, 30); // 16 aug 2026, 14:30
-  expect(
-    formatTurnContext(
-      { userId: "alice", aliases: ["al"], joinedAt: 0 },
-      [{ userId: "alice", aliases: ["al"], joinedAt: 0 }],
-      date,
-    ),
-  ).toBe(
-    "\n\nAdditional context: Now it is 16 aug 2026, 14:30. " +
-      "The current user is al with user id alice (aliases: al).",
-  );
-  expect(
-    formatTurnContext(
-      { userId: "alice", aliases: ["al"], joinedAt: 0 },
-      [
-        { userId: "alice", aliases: ["al"], joinedAt: 0 },
-        { userId: "bob", aliases: ["robert", "rob"], joinedAt: 0 },
-      ],
-      date,
-    ),
-  ).toBe(
-    "\n\nAdditional context: Now it is 16 aug 2026, 14:30. " +
-      "The current user is al with user id alice (aliases: al). " +
-      "The other participants are robert with user id bob (aliases: robert, rob).",
-  );
-});
 
 // ---------------------------------------------------------------------------
 // Multi-agent roster harness (coordinator + named specialists)
@@ -993,35 +958,7 @@ describe("Orchestrator", () => {
     expect(receptionistLlm.requests).toHaveLength(0);
   });
 
-  describe("pickAgent", () => {
-    const receptionist = new Agent({ name: "Receptionist" });
-    const specialist = new Agent({
-      name: "Technical Specialist",
-      aliases: ["tech", "support"],
-    });
-    const roster = [receptionist, specialist];
-
-    test("matches by name, then alias, then defaults to the first agent", () => {
-      expect(pickAgent(roster, "ask the technical specialist about X")).toBe(
-        specialist,
-      );
-      expect(pickAgent(roster, "talk to tech please")).toBe(specialist);
-      expect(pickAgent(roster, "hi there")).toBe(receptionist);
-      expect(pickAgent(roster, "")).toBe(receptionist);
-    });
-
-    test("matching is case-insensitive", () => {
-      expect(pickAgent(roster, "TECHNICAL SPECIALIST!")).toBe(specialist);
-      expect(pickAgent(roster, "Hi, Tech")).toBe(specialist);
-      expect(pickAgent(roster, "RECEPTIONIST?")).toBe(receptionist);
-    });
-
-    test("returns null for an empty roster", () => {
-      expect(pickAgent([], "anything")).toBeNull();
-    });
-  });
-
-  describe("coordination", () => {
+describe("coordination", () => {
     function understandThatDelegates(tasks: unknown[]): LLMScript {
       return async function* (request) {
         if (request.messages.at(-1)?.role === "tool") {
@@ -2314,51 +2251,6 @@ describe("LLM stream stall recovery", () => {
 
 describe("history windowing", () => {
   const turn = (n: number) => `User turn number ${n}.`;
-  const reply = (n: number) => `Assistant reply ${n}.`;
-
-  /** user/assistant turns 1..n, oldest first. */
-  const historyOf = (n: number): LLMMessage[] => {
-    const messages: LLMMessage[] = [];
-    for (let i = 1; i <= n; i++) {
-      messages.push({ role: "user", content: turn(i) });
-      messages.push({ role: "assistant", content: reply(i) });
-    }
-    return messages;
-  };
-
-  test("keeps everything when there are fewer user turns than the window", () => {
-    const history = historyOf(3);
-    expect(windowHistory(history, { maxTurns: 5, maxChars: 10_000 })).toEqual(history);
-  });
-
-  test("keeps only the most recent user turns (plus their replies)", () => {
-    const windowed = windowHistory(historyOf(7), { maxTurns: 3, maxChars: 10_000 });
-    expect(windowed.map((m) => m.content)).toEqual([
-      turn(5),
-      reply(5),
-      turn(6),
-      reply(6),
-      turn(7),
-      reply(7),
-    ]);
-  });
-
-  test("the character bound drops oldest whole messages but never the current turn", () => {
-    // Every turn is ~25 chars; a 90-char bound fits about 3 turns.
-    const windowed = windowHistory(historyOf(7), { maxTurns: 5, maxChars: 90 });
-    expect(windowed.map((m) => m.content)).toEqual([
-      turn(6),
-      reply(6),
-      turn(7),
-      reply(7),
-    ]);
-    // The current turn (the last user message) always survives.
-    expect(windowed.at(-1)!.content).toBe(reply(7));
-  });
-
-  test("an empty history stays empty", () => {
-    expect(windowHistory([], { maxTurns: 5, maxChars: 4_000 })).toEqual([]);
-  });
 
   test("the orchestrator sends only the windowed history to the LLM", async () => {
     const harness = await setup({

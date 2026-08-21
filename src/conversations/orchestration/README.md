@@ -10,6 +10,8 @@ conversations/orchestration/
 
 - **Orchestrator** — attaches to a conversation, routes turns, drives the
   streaming pipeline, handles interruptions/barge-in, and executes tool calls.
+  The state machine composes focused collaborators for history, routing,
+  generation, speech, tools, and coordination execution.
   See [orchestrator/README.md](./orchestrator/README.md).
 - **Coordination** — the `understand` reasoning loop and the `delegate` tool
   contract (agents / coordination / user / complete), including suspension and

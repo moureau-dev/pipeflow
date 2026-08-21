@@ -26,17 +26,28 @@ export interface LLMToolDefinition {
 }
 
 /**
- * How tool calls are encoded on the wire.
+ * How tool calls are encoded on the wire. The semantic contract is the same
+ * in every mode — callers still pass `tools` and consume `tool_call` events —
+ * only the encoding differs. The right mode is a property of the model's
+ * endpoints, not the caller: use `ToolModeBenchmark` to measure a model and
+ * set the mode once at adapter construction.
  *
  * - `native` (default) — the provider's tool-calling contract: `tools` in
- *   the request, `tool_calls` in the stream.
+ *   the request, `tool_calls` in the stream. Streaming deltas and
+ *   provider-enforced argument schemas, at the price of wire overhead: the
+ *   provider expands the schema into its native tool format, which bills
+ *   measurably more prompt tokens (often 5-10x the cost of the modes below).
  * - `envelope` — no `tools`; `response_format` forces the model to emit a
  *   JSON envelope (`{ answer?, calls: [{ name, arguments }] }`) that the
- *   adapter translates back into `tool_call` events. For models whose
- *   endpoints support structured outputs but not native tool calling.
+ *   adapter translates back into `tool_call` events. Endpoint-guaranteed
+ *   JSON and a lean prompt (dramatically cheaper per decision), but nothing
+ *   is actionable until the whole envelope arrives — no streaming deltas.
+ *   Only for endpoints that support structured outputs.
  * - `prompted` — no `tools`; the same envelope is requested by appending an
  *   instruction to the last user message. The universal fallback: works on
- *   any chat model, at the cost of extraction/repair and higher token use.
+ *   any chat model, at the cost of extraction/repair/retry, higher token
+ *   use, and tail-latency risk (models sometimes wrap or wander before the
+ *   JSON).
  */
 export type ToolMode = "native" | "envelope" | "prompted";
 

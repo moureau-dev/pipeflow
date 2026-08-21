@@ -37,3 +37,11 @@ export async function complete(llm: LLM, request: LLMRequest): Promise<string> {
 }
 
 export { DeepSeekLLM, OpenRouterLLM } from "./adapters/index";
+export { ToolModeBenchmark } from "./toolmode";
+export type {
+  ToolModeBenchmarkOptions,
+  ToolModeBenchmarkResult,
+  ToolModeBenchmarkRun,
+  ToolModeReportEntry,
+  ToolModeTiming,
+} from "./toolmode";

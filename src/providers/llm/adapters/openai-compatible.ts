@@ -1,6 +1,7 @@
 import type {
   LLMEvent,
   LLMRequest,
+  LLMToolDefinition,
   LLMStreamTimingCallback,
   LLMUsageCallback,
 } from "../types";
@@ -59,6 +60,46 @@ export interface OpenAICompatibleStreamParams {
 }
 
 /**
+ * JSON schema for the `envelope`/`prompted` tool modes: the model answers
+ * either directly (`answer`) or with a list of tool calls (`calls`). The
+ * adapter turns the parsed envelope back into the standard `LLMEvent`
+ * surface, so consumers never see the envelope format.
+ */
+function buildEnvelopeSchema(tools: LLMToolDefinition[]): Record<string, unknown> {
+  return {
+    type: "object",
+    properties: {
+      answer: {
+        type: "string",
+        description: "Your spoken reply when no tool call is needed.",
+      },
+      calls: {
+        type: "array",
+        description: "The tool calls to execute, when the request needs tools.",
+        items: {
+          type: "object",
+          properties: {
+            name: { type: "string", enum: tools.map((tool) => tool.name) },
+            arguments: { type: "object", description: "The arguments for the named tool." },
+          },
+          required: ["name", "arguments"],
+          additionalProperties: false,
+        },
+      },
+    },
+  };
+}
+
+/** Instruction appended to the last user message in `prompted` mode. */
+function promptedEnvelopeInstruction(tools: LLMToolDefinition[]): string {
+  return (
+    "Respond with ONLY valid JSON matching this schema, with no prose and no markdown fences:\n" +
+    JSON.stringify(buildEnvelopeSchema(tools)) +
+    '\nThe JSON must be either {"answer": "..."} or {"calls": [{"name": "...", "arguments": {...}}]}.'
+  );
+}
+
+/**
  * Stream a request through any OpenAI-compatible `/chat/completions`
  * endpoint, reassembling fragmented tool calls and normalizing the SSE
  * stream into `LLMEvent`s. Shared by the DeepSeek and OpenRouter adapters.
@@ -82,6 +123,8 @@ export async function* openAICompatibleStream(
   } = params;
 
   onTiming?.("request-start");
+  const toolMode = request.toolMode ?? "native";
+  const usesEnvelope = toolMode !== "native" && (request.tools?.length ?? 0) > 0;
   const response = await fetchImpl(`${baseUrl}/chat/completions`, {
     method: "POST",
     headers: {
@@ -92,7 +135,7 @@ export async function* openAICompatibleStream(
     body: JSON.stringify({
       model,
       // LLMMessage uses camelCase; the wire format is snake_case.
-      messages: request.messages.map((message) => {
+      messages: request.messages.map((message, index, all) => {
         const wire: Record<string, unknown> = {
           role: message.role,
           content: message.content,
@@ -106,10 +149,30 @@ export async function* openAICompatibleStream(
             function: { name: call.name, arguments: call.arguments },
           }));
         }
+        if (toolMode === "prompted" && usesEnvelope && index === all.length - 1) {
+          // The only way to constrain output without provider support: ask
+          // the model directly, and parse/validate the result ourselves.
+          wire.content = `${message.content}\n\n${promptedEnvelopeInstruction(request.tools!)}`;
+        }
         return wire;
       }),
-      ...(request.tools && request.tools.length > 0
+      // Envelope modes hide the tools from the provider and encode them in a
+      // schema the model must emit as JSON; native mode uses the provider's
+      // own tool-calling contract.
+      ...(!usesEnvelope && request.tools && request.tools.length > 0
         ? { tools: request.tools.map((tool) => ({ type: "function", function: tool })) }
+        : {}),
+      ...(usesEnvelope && toolMode === "envelope"
+        ? {
+            response_format: {
+              type: "json_schema",
+              json_schema: {
+                name: "tool_envelope",
+                strict: false,
+                schema: buildEnvelopeSchema(request.tools!),
+              },
+            },
+          }
         : {}),
       stream: true,
       temperature: request.temperature,
@@ -140,6 +203,10 @@ export async function* openAICompatibleStream(
   let finishAt = 0;
   let sawUsage = false;
   let toolCallsEmitted = false;
+  // Envelope modes buffer the model's JSON and translate it into events at
+  // the end of the stream (the JSON is not speech and cannot be acted on
+  // until it is complete).
+  let envelopeContent = "";
 
   for await (const chunk of parseSSE(response.body, signal, onTiming, idleTimeoutMs, label)) {
     const choice = chunk.choices?.[0];
@@ -160,7 +227,9 @@ export async function* openAICompatibleStream(
     // can measure thinking time (and optionally surface it). Reasoning-only
     // chunks carry empty content.
     const reasoning = (delta?.reasoning ?? delta?.reasoning_content) ?? "";
-    if (content.length > 0 || reasoning.length > 0) {
+    if (usesEnvelope) {
+      envelopeContent += content;
+    } else if (content.length > 0 || reasoning.length > 0) {
       yield {
         type: "delta",
         content,
@@ -211,6 +280,36 @@ export async function* openAICompatibleStream(
       // Grace for providers that send finish_reason but never [DONE] or
       // usage: proceed after a short wait instead of stalling the run.
       if (Date.now() - finishAt > 500) break;
+    }
+  }
+
+  if (usesEnvelope) {
+    try {
+      const envelope = JSON.parse(envelopeContent) as {
+        answer?: unknown;
+        calls?: Array<{ name?: unknown; arguments?: unknown }>;
+      };
+      if (typeof envelope.answer === "string" && envelope.answer.length > 0) {
+        yield { type: "delta", content: envelope.answer };
+      }
+      for (const call of envelope.calls ?? []) {
+        if (typeof call.name !== "string") continue;
+        // Envelope mode has no provider-assigned call ids; synthesize them so
+        // consumers can match results to calls (id uniqueness is the contract).
+        yield {
+          type: "tool_call",
+          id: crypto.randomUUID(),
+          name: call.name,
+          arguments: JSON.stringify(call.arguments ?? {}),
+        };
+      }
+    } catch {
+      yield {
+        type: "error",
+        error: new Error(
+          `${label} ${toolMode} tool mode: model did not return a JSON envelope (${envelopeContent.slice(0, 120)})`,
+        ),
+      };
     }
   }
 

@@ -25,11 +25,28 @@ export interface LLMToolDefinition {
   parameters: Record<string, unknown>;
 }
 
+/**
+ * How tool calls are encoded on the wire.
+ *
+ * - `native` (default) — the provider's tool-calling contract: `tools` in
+ *   the request, `tool_calls` in the stream.
+ * - `envelope` — no `tools`; `response_format` forces the model to emit a
+ *   JSON envelope (`{ answer?, calls: [{ name, arguments }] }`) that the
+ *   adapter translates back into `tool_call` events. For models whose
+ *   endpoints support structured outputs but not native tool calling.
+ * - `prompted` — no `tools`; the same envelope is requested by appending an
+ *   instruction to the last user message. The universal fallback: works on
+ *   any chat model, at the cost of extraction/repair and higher token use.
+ */
+export type ToolMode = "native" | "envelope" | "prompted";
+
 export interface LLMRequest {
   messages: LLMMessage[];
   tools?: LLMToolDefinition[];
   temperature?: number;
   maxTokens?: number;
+  /** How tools are encoded on the wire. Default `native`. */
+  toolMode?: ToolMode;
 }
 
 /**

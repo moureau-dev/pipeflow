@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { OpenRouterLLM } from "./openrouter";
-import type { LLMRequest } from "../../types";
+import type { LLMRequest, LLMToolDefinition } from "../../types";
 
 function sseResponse(...frames: string[]): Response {
   const encoder = new TextEncoder();
@@ -29,6 +29,12 @@ function deltaChunk(content: string, finishReason?: string | null): string {
 }
 
 const basicRequest: LLMRequest = { messages: [{ role: "user", content: "hi" }] };
+
+const weatherTool: LLMToolDefinition = {
+  name: "get_weather",
+  description: "Get the current weather for a city.",
+  parameters: { type: "object", properties: { city: { type: "string" } }, required: ["city"] },
+};
 
 describe("OpenRouterLLM", () => {
   test("requires an api key", () => {
@@ -143,6 +149,161 @@ describe("OpenRouterLLM", () => {
     expect(body.temperature).toBe(0.5);
     expect(body.max_tokens).toBe(42);
     expect(body.messages).toEqual([{ role: "user", content: "hello" }]);
+  });
+
+  test("envelope mode sends response_format instead of tools and emits tool_call events", async () => {
+    let capturedInit: RequestInit | undefined;
+    const llm = new OpenRouterLLM({
+      apiKey: "test-key",
+      fetch: async (_url, init) => {
+        capturedInit = init;
+        return sseResponse(
+          sseFrame(
+            JSON.stringify({
+              choices: [
+                {
+                  delta: { content: '{"calls":[{"name":"get_weather","arguments":{"city":"Paris"}}]}' },
+                  finish_reason: null,
+                },
+              ],
+            }),
+          ),
+          sseFrame(deltaChunk(""), "stop"),
+        );
+      },
+    });
+
+    const events = [];
+    for await (const event of llm.stream({
+      messages: [{ role: "user", content: "weather in Paris?" }],
+      tools: [weatherTool],
+      toolMode: "envelope",
+    })) {
+      events.push(event);
+    }
+
+    const body = JSON.parse(String(capturedInit?.body)) as Record<string, unknown>;
+    expect(body.tools).toBeUndefined();
+    expect(body.response_format).toEqual({
+      type: "json_schema",
+      json_schema: { name: "tool_envelope", strict: false, schema: expect.any(Object) },
+    });
+    expect(events).toEqual([
+      {
+        type: "tool_call",
+        id: expect.any(String),
+        name: "get_weather",
+        arguments: '{"city":"Paris"}',
+      },
+      { type: "done" },
+    ]);
+  });
+
+  test("envelope mode surfaces a direct answer as a delta", async () => {
+    const llm = new OpenRouterLLM({
+      apiKey: "test-key",
+      fetch: async () =>
+        sseResponse(
+          sseFrame(
+            JSON.stringify({
+              choices: [{ delta: { content: '{"answer":"Sunny and warm."}' }, finish_reason: null }],
+            }),
+          ),
+          sseFrame(deltaChunk(""), "stop"),
+        ),
+    });
+
+    const events = [];
+    for await (const event of llm.stream({
+      messages: [{ role: "user", content: "hi" }],
+      tools: [weatherTool],
+      toolMode: "envelope",
+    })) {
+      events.push(event);
+    }
+    expect(events).toEqual([
+      { type: "delta", content: "Sunny and warm." },
+      { type: "done" },
+    ]);
+  });
+
+  test("prompted mode appends the envelope instruction and parses the reply", async () => {
+    let capturedInit: RequestInit | undefined;
+    const llm = new OpenRouterLLM({
+      apiKey: "test-key",
+      fetch: async (_url, init) => {
+        capturedInit = init;
+        return sseResponse(
+          sseFrame(
+            JSON.stringify({
+              choices: [
+                {
+                  delta: { content: '{"calls":[{"name":"get_weather","arguments":{"city":"Rome"}}]}' },
+                  finish_reason: null,
+                },
+              ],
+            }),
+          ),
+          sseFrame(deltaChunk(""), "stop"),
+        );
+      },
+    });
+
+    const events = [];
+    for await (const event of llm.stream({
+      messages: [{ role: "user", content: "weather in Rome?" }],
+      tools: [weatherTool],
+      toolMode: "prompted",
+    })) {
+      events.push(event);
+    }
+
+    const body = JSON.parse(String(capturedInit?.body)) as {
+      messages: Array<{ content: string }>;
+      tools?: unknown;
+      response_format?: unknown;
+    };
+    expect(body.tools).toBeUndefined();
+    expect(body.response_format).toBeUndefined();
+    const last = body.messages.at(-1)!.content;
+    expect(last).toContain("Respond with ONLY valid JSON");
+    expect(last).toContain("get_weather");
+    expect(events).toEqual([
+      {
+        type: "tool_call",
+        id: expect.any(String),
+        name: "get_weather",
+        arguments: '{"city":"Rome"}',
+      },
+      { type: "done" },
+    ]);
+  });
+
+  test("envelope mode reports a non-JSON reply as an error event", async () => {
+    const llm = new OpenRouterLLM({
+      apiKey: "test-key",
+      fetch: async () =>
+        sseResponse(
+          sseFrame(
+            JSON.stringify({
+              choices: [{ delta: { content: "I cannot do that" }, finish_reason: null }],
+            }),
+          ),
+          sseFrame(deltaChunk(""), "stop"),
+        ),
+    });
+
+    const events = [];
+    for await (const event of llm.stream({
+      messages: [{ role: "user", content: "hi" }],
+      tools: [weatherTool],
+      toolMode: "envelope",
+    })) {
+      events.push(event);
+    }
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: "error" });
+    expect(events[1]).toEqual({ type: "done" });
   });
 
   test("sends attribution headers and a custom model when configured", async () => {

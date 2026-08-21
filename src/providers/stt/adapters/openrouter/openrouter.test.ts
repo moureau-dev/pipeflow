@@ -154,6 +154,26 @@ describe("OpenRouterSTT", () => {
     expect(form.get("language")).toBeNull();
   });
 
+  test("audioFormat: 'mp3' sends pre-encoded bytes as-is", async () => {
+    const { calls, fetch } = makeFakeFetch(async () => ok("hello"));
+    const stt = new OpenRouterSTT({ apiKey: "test-key", audioFormat: "mp3", silenceMs: 5, fetch });
+    const session = stt.start();
+    const finals: string[] = [];
+    session.on("final", (text) => finals.push(text));
+
+    const clip = new TextEncoder().encode("ID3not really mp3 bytes");
+    session.write(clip);
+    await Bun.sleep(30);
+
+    expect(finals).toEqual(["hello"]);
+    const file = (calls[0]!.init.body as FormData).get("file") as File;
+    expect(file.name).toBe("audio.mp3");
+    expect(file.type).toBe("audio/mpeg");
+    // No WAV wrapping: the bytes are passed through untouched.
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    expect([...bytes]).toEqual([...clip]);
+  });
+
   test("write after end throws", async () => {
     const { fetch } = makeFakeFetch(async () => ok("done"));
     const stt = new OpenRouterSTT({ apiKey: "test-key", fetch });

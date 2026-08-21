@@ -1,2 +1,2 @@
 export { OpenRouterSTT, OpenRouterSession, toWav } from "./openrouter";
-export type { OpenRouterSTTOptions } from "./openrouter";
+export type { OpenRouterAudioFormat, OpenRouterSTTOptions } from "./openrouter";

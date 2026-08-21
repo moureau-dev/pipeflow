@@ -1,6 +1,16 @@
 import type { STT, STTOptions, STTSession } from "../../types";
 import type { FetchLike } from "../../../shared";
 
+/** Audio formats the OpenRouter transcription endpoint accepts. */
+export type OpenRouterAudioFormat =
+  | "pcm"
+  | "mp3"
+  | "flac"
+  | "m4a"
+  | "ogg"
+  | "webm"
+  | "aac";
+
 export interface OpenRouterSTTOptions extends STTOptions {
   apiKey: string;
   /** Defaults to `https://openrouter.ai/api/v1`. */
@@ -14,6 +24,14 @@ export interface OpenRouterSTTOptions extends STTOptions {
    * has elapsed since the last audio. Default 800.
    */
   silenceMs?: number;
+  /**
+   * Format of the audio written to the session. `"pcm"` (the default)
+   * assumes raw linear16 samples at `sampleRate` and wraps each clip in a
+   * WAV container. Pass the actual encoding (e.g. `"mp3"`, `"ogg"`, …) when
+   * feeding pre-encoded audio — those formats are self-describing and are
+   * sent as-is.
+   */
+  audioFormat?: OpenRouterAudioFormat;
   /** Injectable fetch, mainly for tests. */
   fetch?: FetchLike;
 }
@@ -35,6 +53,10 @@ type OpenRouterEvent = "partial" | "final" | "error" | "close";
  * docs say improves accuracy and latency); omitting it — or passing `"auto"`,
  * the whisper convention, which is normalized to "omit" — leaves detection to
  * the provider, matching OpenRouter's "auto-detected if omitted" contract.
+ *
+ * By default the written audio is treated as raw linear16 PCM and wrapped in
+ * a WAV container; set `audioFormat` to the real encoding (e.g. `"mp3"`) to
+ * send pre-encoded audio as-is instead.
  *
  * `end()` transcribes any remaining buffered audio; `cancel()` drops
  * buffered audio and aborts in-flight requests.
@@ -75,6 +97,7 @@ export class OpenRouterSession implements STTSession {
   private readonly language: string | undefined;
   private readonly sampleRate: number;
   private readonly silenceMs: number;
+  private readonly audioFormat: OpenRouterAudioFormat;
   private readonly fetchImpl: FetchLike;
 
   private chunks: Uint8Array[] = [];
@@ -94,6 +117,7 @@ export class OpenRouterSession implements STTSession {
     this.language = options.language === "auto" ? undefined : options.language;
     this.sampleRate = options.sampleRate ?? 16_000;
     this.silenceMs = options.silenceMs ?? 800;
+    this.audioFormat = options.audioFormat ?? "pcm";
     this.fetchImpl = options.fetch ?? fetch;
   }
 
@@ -181,6 +205,7 @@ export class OpenRouterSession implements STTSession {
         model: this.model,
         language: this.language,
         sampleRate: this.sampleRate,
+        audioFormat: this.audioFormat,
         audio,
         signal: controller.signal,
         fetchImpl: this.fetchImpl,
@@ -214,17 +239,40 @@ interface TranscribeClipOptions {
   model: string;
   language: string | undefined;
   sampleRate: number;
+  audioFormat: OpenRouterAudioFormat;
   audio: Uint8Array;
   signal: AbortSignal;
   fetchImpl: FetchLike;
 }
 
+const AUDIO_MIME: Record<Exclude<OpenRouterAudioFormat, "pcm">, string> = {
+  mp3: "audio/mpeg",
+  flac: "audio/flac",
+  m4a: "audio/mp4",
+  ogg: "audio/ogg",
+  webm: "audio/webm",
+  aac: "audio/aac",
+};
+
 async function transcribeClip(options: TranscribeClipOptions): Promise<string> {
   const form = new FormData();
   form.append("model", options.model);
-  // OpenRouter accepts OpenAI-style multipart uploads; whisper reads the
-  // raw linear16 PCM as a WAV clip.
-  form.append("file", new Blob([toWav(options.audio, options.sampleRate)], { type: "audio/wav" }), "audio.wav");
+  // OpenRouter accepts OpenAI-style multipart uploads. Raw linear16 PCM is
+  // wrapped in a WAV container so whisper can read it; pre-encoded formats
+  // (mp3, ogg, …) are self-describing and sent as-is.
+  let bytes: Uint8Array;
+  let name: string;
+  let type: string;
+  if (options.audioFormat === "pcm") {
+    bytes = toWav(options.audio, options.sampleRate);
+    name = "audio.wav";
+    type = "audio/wav";
+  } else {
+    bytes = options.audio;
+    name = `audio.${options.audioFormat}`;
+    type = AUDIO_MIME[options.audioFormat];
+  }
+  form.append("file", new Blob([bytes], { type }), name);
   if (options.language) form.append("language", options.language);
 
   const response = await options.fetchImpl(`${options.baseUrl}/audio/transcriptions`, {

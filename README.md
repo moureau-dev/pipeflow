@@ -477,16 +477,31 @@ for how it is wired into the realtime pipeline.
 Tools expose capabilities from your application to an agent.
 
 ```ts
+import { z } from "zod";
+
 const getWeather = new PipeflowTool({
   name: "get_weather",
 
   description: "Get the current weather for a city.",
+
+  // One zod schema drives both sides: it derives the JSON schema the model
+  // sees, and validates the arguments before execute() runs.
+  schema: {
+    in: z.object({ city: z.string().describe("The city to look up.") }),
+  },
 
   execute: async ({ city }) => {
     return weatherService.getCurrent(city);
   },
 });
 ```
+
+`schema.in` is what the model sends; `schema.out` (optional, defaults to `in`)
+is what `execute` receives after validation, and may transform the arguments.
+Prefer `schema` — it keeps the model contract and your `execute` signature in
+sync and rejects bad arguments with a clear error instead of crashing inside
+the tool. If you need a hand-written JSON schema instead, pass `parameters`
+(no runtime validation).
 
 Then:
 

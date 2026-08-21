@@ -162,6 +162,9 @@ Notes:
 
 - Assumes linear16 PCM (mono, `sampleRate`, default 16 kHz) and wraps it in a
   minimal WAV container before upload.
+- Language: auto-detected by the provider when omitted. Pass an ISO-639-1
+  code to force one (whisper docs say it improves accuracy and latency); the
+  whisper-idiomatic `"auto"` is normalized to "omit" and never sent.
 - A turn arrives whole at the `final` event once its clip has been
   transcribed — no `partial` events (batch API). Turn latency is
   `silenceMs` + transcription time.

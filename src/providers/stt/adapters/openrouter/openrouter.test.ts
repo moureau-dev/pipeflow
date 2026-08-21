@@ -141,6 +141,19 @@ describe("OpenRouterSTT", () => {
     expect(form.get("language")).toBe("ja");
   });
 
+  test("language: 'auto' is omitted (provider-side detection)", async () => {
+    const { calls, fetch } = makeFakeFetch(async () => ok("hi"));
+    const stt = new OpenRouterSTT({ apiKey: "test-key", language: "auto", silenceMs: 5, fetch });
+    const session = stt.start();
+    session.on("final", () => {});
+
+    session.write(new Uint8Array([1]));
+    await Bun.sleep(30);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("language")).toBeNull();
+  });
+
   test("write after end throws", async () => {
     const { fetch } = makeFakeFetch(async () => ok("done"));
     const stt = new OpenRouterSTT({ apiKey: "test-key", fetch });

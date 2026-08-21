@@ -31,6 +31,11 @@ type OpenRouterEvent = "partial" | "final" | "error" | "close";
  * results are unavailable, so no `partial` events are ever emitted: a turn
  * arrives whole at the `final` event once its clip has been transcribed.
  *
+ * `language` accepts an ISO-639-1 code to force a language (which whisper
+ * docs say improves accuracy and latency); omitting it — or passing `"auto"`,
+ * the whisper convention, which is normalized to "omit" — leaves detection to
+ * the provider, matching OpenRouter's "auto-detected if omitted" contract.
+ *
  * `end()` transcribes any remaining buffered audio; `cancel()` drops
  * buffered audio and aborts in-flight requests.
  */
@@ -83,7 +88,10 @@ export class OpenRouterSession implements STTSession {
     this.apiKey = options.apiKey;
     this.baseUrl = (options.baseUrl ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
     this.model = options.model ?? "openai/whisper-large-v3-turbo";
-    this.language = options.language;
+    // `"auto"` is the whisper convention for "let the provider detect";
+    // OpenRouter detects when the field is omitted, so normalize it away
+    // rather than forwarding a string some providers may reject.
+    this.language = options.language === "auto" ? undefined : options.language;
     this.sampleRate = options.sampleRate ?? 16_000;
     this.silenceMs = options.silenceMs ?? 800;
     this.fetchImpl = options.fetch ?? fetch;

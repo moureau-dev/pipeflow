@@ -151,6 +151,31 @@ describe("OpenRouterLLM", () => {
     expect(body.messages).toEqual([{ role: "user", content: "hello" }]);
   });
 
+  test("surfaces a provider error chunk (no choices) as an error event", async () => {
+    const llm = new OpenRouterLLM({
+      apiKey: "test-key",
+      fetch: async () =>
+        sseResponse(
+          sseFrame(
+            JSON.stringify({
+              choices: [],
+              error: { code: 504, message: "The operation was aborted" },
+            }),
+          ),
+        ),
+    });
+
+    const events = [];
+    for await (const event of llm.stream(basicRequest)) {
+      events.push(event);
+    }
+
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: "error" });
+    expect((events[0] as { error: Error }).error.message).toMatch(/provider aborted the stream: .*The operation was aborted/);
+    expect(events[1]).toEqual({ type: "done" });
+  });
+
   test("envelope mode sends response_format instead of tools and emits tool_call events", async () => {
     let capturedInit: RequestInit | undefined;
     const llm = new OpenRouterLLM({
@@ -184,6 +209,15 @@ describe("OpenRouterLLM", () => {
 
     const body = JSON.parse(String(capturedInit?.body)) as Record<string, unknown>;
     expect(body.tools).toBeUndefined();
+    const envelopeSchema = (body.response_format as {
+      json_schema: { schema: { properties: Record<string, unknown> } };
+    }).json_schema.schema;
+    // The envelope carries each tool's argument schema (index-aligned with
+    // the name enum), so the model sees the same contract as native mode.
+    const calls = envelopeSchema.properties.calls as {
+      items: { properties: { arguments: { oneOf: unknown[] } } };
+    };
+    expect(calls.items.properties.arguments.oneOf).toEqual([weatherTool.parameters]);
     expect(body.response_format).toEqual({
       type: "json_schema",
       json_schema: { name: "tool_envelope", strict: false, schema: expect.any(Object) },
@@ -274,6 +308,48 @@ describe("OpenRouterLLM", () => {
         id: expect.any(String),
         name: "get_weather",
         arguments: '{"city":"Rome"}',
+      },
+      { type: "done" },
+    ]);
+  });
+
+  test("prompted mode strips markdown fences before parsing", async () => {
+    const llm = new OpenRouterLLM({
+      apiKey: "test-key",
+      fetch: async () =>
+        sseResponse(
+          sseFrame(
+            JSON.stringify({
+              choices: [
+                {
+                  delta: {
+                    content:
+                      '```json\n{"calls":[{"name":"get_weather","arguments":{"city":"Oslo"}}]}\n```',
+                  },
+                  finish_reason: null,
+                },
+              ],
+            }),
+          ),
+          sseFrame(deltaChunk(""), "stop"),
+        ),
+    });
+
+    const events = [];
+    for await (const event of llm.stream({
+      messages: [{ role: "user", content: "weather in Oslo?" }],
+      tools: [weatherTool],
+      toolMode: "prompted",
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: "tool_call",
+        id: expect.any(String),
+        name: "get_weather",
+        arguments: '{"city":"Oslo"}',
       },
       { type: "done" },
     ]);

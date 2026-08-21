@@ -27,6 +27,8 @@ interface ChatCompletionChunk {
     finish_reason?: string | null;
   }>;
   usage?: { prompt_tokens?: number; completion_tokens?: number };
+  /** Provider failure delivered as an SSE data chunk (no choices). */
+  error?: { code?: number | string; message?: string };
 }
 
 export interface OpenAICompatibleStreamParams {
@@ -71,6 +73,11 @@ export interface OpenAICompatibleStreamParams {
  * either directly (`answer`) or with a list of tool calls (`calls`). The
  * adapter turns the parsed envelope back into the standard `LLMEvent`
  * surface, so consumers never see the envelope format.
+ *
+ * The `arguments` of each call carry a per-tool `oneOf` of the tools' own
+ * parameter schemas (index-aligned with the `name` enum), so the model sees
+ * the same argument contract it would in native mode — without the native
+ * tool-calling endpoint.
  */
 function buildEnvelopeSchema(tools: LLMToolDefinition[]): Record<string, unknown> {
   return {
@@ -86,8 +93,14 @@ function buildEnvelopeSchema(tools: LLMToolDefinition[]): Record<string, unknown
         items: {
           type: "object",
           properties: {
-            name: { type: "string", enum: tools.map((tool) => tool.name) },
-            arguments: { type: "object", description: "The arguments for the named tool." },
+            name: {
+              type: "string",
+              enum: tools.map((tool) => tool.name),
+            },
+            arguments: {
+              description: "The arguments for the named tool, per its schema.",
+              oneOf: tools.map((tool) => tool.parameters ?? { type: "object" }),
+            },
           },
           required: ["name", "arguments"],
           additionalProperties: false,
@@ -104,6 +117,24 @@ function promptedEnvelopeInstruction(tools: LLMToolDefinition[]): string {
     JSON.stringify(buildEnvelopeSchema(tools)) +
     '\nThe JSON must be either {"answer": "..."} or {"calls": [{"name": "...", "arguments": {...}}]}.'
   );
+}
+
+/**
+ * Fallback extraction for prompted mode: strip markdown fences and keep the
+ * outermost JSON object, rescuing models that wrap or preface the envelope
+ * despite the instruction (the endpoint guarantees nothing without
+ * `response_format`).
+ */
+function extractEnvelope(raw: string): string | null {
+  const stripped = raw
+    .replace(/```(?:json)?/gi, "")
+    .replace(/^[^{]*/, "")
+    .replace(/[^}]*$/, "");
+  if (stripped.length === 0) return null;
+  const start = stripped.indexOf("{");
+  const end = stripped.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return null;
+  return stripped.slice(start, end + 1);
 }
 
 /**
@@ -220,6 +251,19 @@ export async function* openAICompatibleStream(
   for await (const chunk of parseSSE(response.body, signal, onTiming, idleTimeoutMs, label)) {
     const choice = chunk.choices?.[0];
 
+    if (chunk.error) {
+      // Some providers (e.g. Bedrock via OpenRouter) abort mid-stream and
+      // deliver the failure as an SSE chunk with no choices. Surface it
+      // instead of silently swallowing it into a confusing empty stream.
+      yield {
+        type: "error",
+        error: new Error(
+          `${label} provider aborted the stream: ${chunk.error.message ?? JSON.stringify(chunk.error)}`,
+        ),
+      };
+      break;
+    }
+
     if (chunk.usage && (chunk.usage.prompt_tokens ?? 0) > 0) {
       sawUsage = true;
       finishAt = 0;
@@ -293,11 +337,32 @@ export async function* openAICompatibleStream(
   }
 
   if (usesEnvelope) {
+    let envelope:
+      | { answer?: unknown; calls?: Array<{ name?: unknown; arguments?: unknown }> }
+      | undefined;
     try {
-      const envelope = JSON.parse(envelopeContent) as {
-        answer?: unknown;
-        calls?: Array<{ name?: unknown; arguments?: unknown }>;
+      envelope = JSON.parse(envelopeContent);
+    } catch {
+      // Prompted mode has no endpoint guarantee: the model may wrap the JSON
+      // in fences or preface it with prose. Retry with extraction before
+      // failing the stream.
+      const extracted = extractEnvelope(envelopeContent);
+      if (extracted !== null) {
+        try {
+          envelope = JSON.parse(extracted);
+        } catch {
+          envelope = undefined;
+        }
+      }
+    }
+    if (envelope === undefined) {
+      yield {
+        type: "error",
+        error: new Error(
+          `${label} ${toolMode} tool mode: model did not return a JSON envelope (${envelopeContent.slice(0, 120)})`,
+        ),
       };
+    } else {
       if (typeof envelope.answer === "string" && envelope.answer.length > 0) {
         yield { type: "delta", content: envelope.answer };
       }
@@ -312,13 +377,6 @@ export async function* openAICompatibleStream(
           arguments: JSON.stringify(call.arguments ?? {}),
         };
       }
-    } catch {
-      yield {
-        type: "error",
-        error: new Error(
-          `${label} ${toolMode} tool mode: model did not return a JSON envelope (${envelopeContent.slice(0, 120)})`,
-        ),
-      };
     }
   }
 

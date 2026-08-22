@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Pipeflow · WebSocket voice chat</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 640px;
+        margin: 2rem auto;
+        padding: 0 1rem;
+        color: #1a1a1a;
+      }
+      h1 { font-size: 1.25rem; }
+      #log {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 1rem;
+        min-height: 300px;
+        max-height: 50vh;
+        overflow-y: auto;
+        background: #fafafa;
+      }
+      .user { color: #0a7d4f; margin: 0.6rem 0; }
+      .agent { color: #1d3f8f; margin: 0.6rem 0; white-space: pre-wrap; }
+      .error { color: #c0392b; margin: 0.6rem 0; }
+      .row { display: flex; gap: 0.5rem; margin-top: 1rem; }
+      input { flex: 1; padding: 0.5rem; border: 1px solid #ccc; border-radius: 6px; }
+      button { padding: 0.5rem 1rem; border: 1px solid #ccc; border-radius: 6px; background: #fff; cursor: pointer; }
+      button:hover { background: #f0f0f0; }
+      .hint { color: #888; font-size: 0.8rem; margin-top: 0.75rem; }
+      .status { color: #888; font-size: 0.8rem; margin-top: 0.5rem; }
+    </style>
+  </head>
+  <body>
+    <h1>Pipeflow · WebSocket voice chat</h1>
+    <div id="log"></div>
+    <div class="row">
+      <input id="text" placeholder="Type a message…" autocomplete="off" />
+      <button id="send">Send</button>
+      <button id="mic">🎤 Start mic</button>
+    </div>
+    <div class="hint">
+      whisper-large-v3-turbo (STT, silence-segmented) → llama-4-scout (LLM, native tools) →
+      fish s2.1 free (TTS, per-sentence &amp; pipelined)
+    </div>
+    <div class="status" id="status"></div>
+    <script src="./client.js"></script>
+  </body>
+</html>

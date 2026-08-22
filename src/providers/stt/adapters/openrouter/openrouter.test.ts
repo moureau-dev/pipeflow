@@ -128,6 +128,55 @@ describe("OpenRouterSTT", () => {
     expect(finals).toEqual([]);
   });
 
+  test("audio spoken while a clip is transcribing keeps its own clip boundary", async () => {
+    // Stall the transcription until the test says go, simulating a slow API.
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const { calls, fetch } = makeFakeFetch(async () => {
+      await gate;
+      return ok("clip done");
+    });
+    const stt = new OpenRouterSTT({ apiKey: "test-key", silenceMs: 15, fetch });
+    const session = stt.start();
+    const finals: string[] = [];
+    session.on("final", (text) => finals.push(text));
+
+    // "bla ble" — silence elapses, transcription #1 starts and stalls.
+    session.write(new Uint8Array([1, 1, 1, 1]));
+    await Bun.sleep(50);
+
+    // "bli blo" arrives while #1 is in flight — it must NOT be swept into
+    // #1's clip; it starts its own.
+    session.write(new Uint8Array([2, 2, 2, 2]));
+    await Bun.sleep(50); // its silence elapses; queued behind #1
+
+    // "blu blu" — said after "bli blo"'s silence, so a third clip.
+    session.write(new Uint8Array([3, 3, 3, 3]));
+    await Bun.sleep(50);
+
+    release();
+    await Bun.sleep(80);
+
+    // Every syllable reached its own clip, in order: #1 = "bla ble",
+    // #2 = "bli blo", #3 = "blu blu" — nothing lost, nothing merged.
+    expect(finals).toEqual(["clip done", "clip done", "clip done"]);
+    expect(calls).toHaveLength(3);
+    const payloads = await Promise.all(
+      calls.map(async (call) => {
+        const file = (call.init.body as FormData).get("file") as File;
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        return [...bytes.subarray(44)]; // skip the WAV header
+      }),
+    );
+    expect(payloads).toEqual([
+      [1, 1, 1, 1],
+      [2, 2, 2, 2],
+      [3, 3, 3, 3],
+    ]);
+  });
+
   test("passes the language through to the request", async () => {
     const { calls, fetch } = makeFakeFetch(async () => ok("こんにちは"));
     const stt = new OpenRouterSTT({ apiKey: "test-key", language: "ja", silenceMs: 5, fetch });
@@ -152,6 +201,79 @@ describe("OpenRouterSTT", () => {
 
     const form = calls[0]!.init.body as FormData;
     expect(form.get("language")).toBeNull();
+  });
+
+  test("minClipRms skips near-silence clips without a transcription request", async () => {
+    const { calls, fetch } = makeFakeFetch(async () => ok("E aí"));
+    const stt = new OpenRouterSTT({
+      apiKey: "test-key",
+      silenceMs: 5,
+      minClipRms: 0.01,
+      fetch,
+    });
+    const session = stt.start();
+    const finals: string[] = [];
+    session.on("final", (text) => finals.push(text));
+
+    // Silence (all-zero samples) is below any energy floor.
+    session.write(new Uint8Array(4000));
+    await Bun.sleep(30);
+
+    expect(calls).toHaveLength(0);
+    expect(finals).toEqual([]);
+  });
+
+  test("minClipRms transcribes clips above the floor", async () => {
+    const { calls, fetch } = makeFakeFetch(async () => ok("real speech"));
+    const stt = new OpenRouterSTT({
+      apiKey: "test-key",
+      silenceMs: 5,
+      minClipRms: 0.01,
+      fetch,
+    });
+    const session = stt.start();
+    const finals: string[] = [];
+    session.on("final", (text) => finals.push(text));
+
+    // Full-scale square wave: RMS ≈ 0.707, far above the floor.
+    const loud = new Uint8Array(4000);
+    for (let i = 0; i < 2000; i++) {
+      loud[i * 2] = i % 2 === 0 ? 0xff : 0x7f;
+      loud[i * 2 + 1] = i % 2 === 0 ? 0x7f : 0x7f;
+    }
+    session.write(loud);
+    await Bun.sleep(30);
+
+    expect(calls).toHaveLength(1);
+    expect(finals).toEqual(["real speech"]);
+  });
+
+  test("onClipEnergy reports every measured clip and its decision", async () => {
+    const { fetch } = makeFakeFetch(async () => ok("speech"));
+    const energies: { rms: number; transcribed: boolean }[] = [];
+    const stt = new OpenRouterSTT({
+      apiKey: "test-key",
+      silenceMs: 5,
+      minClipRms: 0.01,
+      onClipEnergy: (rms, transcribed) => energies.push({ rms, transcribed }),
+      fetch,
+    });
+    const session = stt.start();
+    session.on("final", () => {});
+
+    // Silence first (skipped), then a loud clip (transcribed).
+    session.write(new Uint8Array(4000));
+    await Bun.sleep(30);
+    const loud = new Uint8Array(4000);
+    for (let i = 0; i < 2000; i++) loud[i * 2 + 1] = 0x7f;
+    session.write(loud);
+    await Bun.sleep(30);
+
+    expect(energies).toHaveLength(2);
+    expect(energies[0]!.rms).toBeCloseTo(0, 5);
+    expect(energies[0]!.transcribed).toBe(false);
+    expect(energies[1]!.rms).toBeGreaterThan(0.4);
+    expect(energies[1]!.transcribed).toBe(true);
   });
 
   test("audioFormat: 'mp3' sends pre-encoded bytes as-is", async () => {
@@ -303,6 +425,32 @@ describe("cleanTranscript", () => {
   test("leaves normal speech untouched", () => {
     expect(cleanTranscript("What's the weather like today?")).toBe(
       "What's the weather like today?",
+    );
+  });
+
+  test("drops multilingual fillers whisper hears on near-silence", () => {
+    expect(cleanTranscript("E aí")).toBe("");
+    expect(cleanTranscript("Oi!")).toBe("");
+    expect(cleanTranscript("merci")).toBe("");
+    expect(cleanTranscript("hola")).toBe("");
+  });
+
+  test("drops filler-only repetitions even without sentence boundaries", () => {
+    // Whisper often emits the repeated filler with no punctuation at all.
+    expect(cleanTranscript("E aí E aí")).toBe("");
+    expect(cleanTranscript("E aí. E aí.")).toBe("");
+    expect(cleanTranscript("ok ok thank you")).toBe("");
+  });
+
+  test("keeps a filler prefix when real speech follows", () => {
+    expect(cleanTranscript("E aí, vamos conversar")).toBe("E aí, vamos conversar");
+    expect(cleanTranscript("Ok, what's the weather?")).toBe("Ok, what's the weather?");
+  });
+
+  test("accepts extra filler phrases for other languages", () => {
+    expect(cleanTranscript("папапапа", ["папапапа"])).toBe("");
+    expect(cleanTranscript("папапапа ну давай", ["папапапа"])).toBe(
+      "папапапа ну давай",
     );
   });
 });

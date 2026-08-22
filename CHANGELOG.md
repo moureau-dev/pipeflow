@@ -12,11 +12,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Whisper hallucination filter** — `OpenRouterSTT` cleans transcripts by
   default before emission: asterisk stage directions (`*Dramatic music*`) are
   dropped, consecutive repeated sentences (`Thank you. Thank you.`) collapse
-  to one, and transcripts that are entirely a conversational filler
-  (`Thank you.`, `Bye.`, …) are suppressed. `filterHallucinations: false`
-  returns raw transcripts. These artifacts come from near-silence clips and
-  speaker echo, so the example also trims trailing silence and enables
+  to one, and transcripts built *entirely* from conversational fillers — the
+  built-in multilingual list (English, Portuguese, Spanish, French, German)
+  plus `fillerPhrases` extras, repeated or not (`E aí`, `E aí E aí`, `ok ok
+  thank you`) — are suppressed. `filterHallucinations: false` returns raw
+  transcripts. These artifacts come from near-silence clips
+  and speaker echo, so the example also trims trailing silence and enables
   `echoCancellation`/`noiseSuppression` at the mic.
+- **Clip-level energy floor** — `OpenRouterSTT` accepts `minClipRms`
+  (0–1 RMS): buffered `pcm` clips below the floor — the near-silence ones
+  whisper hallucinates on — are dropped *before* transcription, so no request
+  is sent, no `final` fires, and no fabricated turn reaches the conversation
+  (or interrupts a generation). The client's VAD gates what is sent; this
+  gates what is transcribed. `onClipEnergy` reports every measured clip's RMS
+  and whether it was transcribed, for tuning the floor against your real
+  distribution (speech clips sit far above artifact clips). The floor is
+  live-tunable (`stt.minClipRms = …`, no session restart) and the example's
+  client has a slider for it, showing each clip's RMS as you drag.
 - **STT sampling/passthrough options** — `OpenRouterSTT` accepts `temperature`
   and `providerOptions` (serialized as the multipart `provider` field).
   OpenRouter ignores whisper's top-level `prompt`, so per-provider options
@@ -51,6 +63,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Clip boundaries freeze at silence detection** — the OpenRouter STT
+  adapter previously took its buffer when the serialized transcription
+  callback ran, not when the silence that ended the clip was detected. If a
+  previous clip was still being transcribed, a late-running flush swept the
+  start of the next utterance into the wrong clip (or merged utterances
+  separated by a full silence gap into one turn). The buffer is now captured
+  synchronously in `flush()` — the audio that arrives while a transcription
+  is in flight starts its own clip.
+
 - **Example tool handler removed** — the WebSocket example no longer
   hand-wires `tool-call` → `resolveToolCall` (with an unsafe `execute` cast);
   the agent's `get_weather` tool auto-executes.
@@ -61,6 +82,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   playback queue). The server now forwards the conversation's `interrupt`
   event and the client cuts the current buffer and drops the queue the moment
   the mic hears the user, on a new turn, or on the server message.
+- **Mic taps no longer interrupt the agent** — the client previously cut
+  playback on the *first* voiced buffer, so a tap or pop (a single 256ms
+  transient) stopped the agent mid-sentence. Barge-in is now gated on
+  sustained voiced audio: playback cuts after two consecutive voiced buffers
+  (~512ms — a tap can't sustain that), and audio is still only *sent* after
+  the full VAD confirmation streak.
 - **Example voice drift** — fish's free TTS variant varies the voice per
   request when `voice` is omitted; the example now pins `voice: "alloy"`.
 - **Example playback speed** — raw pcm has a provider-defined sample rate

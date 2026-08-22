@@ -8,9 +8,29 @@ const textInput = document.getElementById("text");
 const sendBtn = document.getElementById("send");
 const micBtn = document.getElementById("mic");
 const statusEl = document.getElementById("status");
+const floorSlider = document.getElementById("floor");
+const floorValue = document.getElementById("floor-value");
+const clipEnergyEl = document.getElementById("clip-energy");
 
 const ws = new WebSocket(`ws://${location.host}/ws`);
 ws.binaryType = "arraybuffer";
+
+// The socket is still CONNECTING for a moment after the page loads — send()
+// throws on it. Drop early messages instead; the server resyncs the floor on
+// connect, and nothing user-triggerable happens before the handshake anyway.
+function sendJson(obj) {
+  if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(obj));
+}
+
+// The STT clip-energy floor (minClipRms) is tunable live: dragging the
+// slider updates the server, and the server broadcasts every clip's measured
+// RMS so you can see where speech vs. artifacts land and set the floor where
+// they separate.
+floorSlider.addEventListener("input", () => {
+  const value = Number(floorSlider.value);
+  floorValue.textContent = value.toFixed(3);
+  sendJson({ type: "minClipRms", value });
+});
 
 let agentLine = null; // the live agent message element being streamed into
 
@@ -31,6 +51,15 @@ ws.onmessage = (event) => {
       stopPlayback();
       agentLine = null;
       addLine("user", `You: ${msg.text}`);
+    } else if (msg.type === "minClipRms") {
+      // The server's current floor (on connect, so the slider starts in sync).
+      floorSlider.value = String(msg.value);
+      floorValue.textContent = Number(msg.value).toFixed(3);
+    } else if (msg.type === "clip-energy") {
+      // Live feedback for tuning the floor: where did the last clip land?
+      clipEnergyEl.textContent = msg.transcribed
+        ? `last clip rms=${msg.rms.toFixed(3)} — transcribed`
+        : `last clip rms=${msg.rms.toFixed(3)} — skipped (below floor)`;
     } else if (msg.type === "delta") {
       if (!agentLine) agentLine = addLine("agent", "");
       agentLine.textContent += msg.text;
@@ -173,13 +202,18 @@ micBtn.addEventListener("click", async () => {
     processor.connect(audioCtx.destination); // keep the processor alive
 
     // VAD with hysteresis: an utterance needs a short streak of voiced
-    // buffers to start (so pops and chewing don't become turns) and two
-    // consecutive silent buffers to end. The lead-in is sent so the start of
-    // the first word isn't clipped. The clip ends as cleanly as possible —
-    // one silent tail buffer, nothing more — and the server's STT segments
-    // utterances on the silence gap.
-    const threshold = 0.02;
-    const startCount = 3; // voiced 256ms buffers needed to begin an utterance
+    // buffers to start (so pops, chewing, and mic taps don't become turns)
+    // and two consecutive silent buffers to end. The lead-in is sent so the
+    // start of the first word isn't clipped. The clip ends as cleanly as
+    // possible — one silent tail buffer, nothing more — and the server's STT
+    // segments utterances on the silence gap.
+    //
+    // Barge-in fires only on *confirmed* speech: playback cuts and audio is
+    // sent together, once the voiced streak reaches `startCount`. A tap or
+    // pop is a single-buffer transient and never reaches the streak, so it
+    // can't interrupt the agent.
+    const threshold = 0.03;
+    const startCount = 3; // voiced 256ms buffers needed to confirm an utterance
     let talking = false;
     let voicedStreak = 0;
     let silentStreak = 0;
@@ -192,15 +226,13 @@ micBtn.addEventListener("click", async () => {
 
       if (!talking) {
         if (voiced) {
-          // First voiced buffer: the user is speaking — cut the agent's audio
-          // immediately (barge-in). The VAD confirmation still gates whether
-          // audio is *sent*; playback stops on the very first sound.
-          if (voicedStreak === 0) stopPlayback();
           leadIn.push(input);
           if (leadIn.length > startCount - 1) leadIn.shift();
           if (++voicedStreak >= startCount) {
             talking = true;
             silentStreak = 0;
+            // Confirmed speech — only now cut the agent and send.
+            stopPlayback();
             for (const lead of leadIn) sendPcm(lead);
             leadIn = [];
           }
@@ -241,7 +273,7 @@ function sendPcm(float) {
     const s = Math.max(-1, Math.min(1, float[i]));
     pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
   }
-  ws.send(pcm.buffer);
+  if (ws.readyState === WebSocket.OPEN) ws.send(pcm.buffer);
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +284,7 @@ function sendText() {
   const text = textInput.value.trim();
   if (!text) return;
   ensureAudio();
-  ws.send(JSON.stringify({ type: "text", text }));
+  sendJson({ type: "text", text });
   textInput.value = "";
 }
 

@@ -45,6 +45,12 @@
       whisper-large-v3-turbo (STT, silence-segmented) → llama-4-scout (LLM, native tools) →
       fish s2.1 free (TTS, per-sentence &amp; pipelined)
     </div>
+    <div class="row" id="stt-row">
+      <label for="floor">STT clip floor</label>
+      <input type="range" id="floor" min="0" max="0.1" step="0.005" value="0.02" />
+      <span id="floor-value">0.020</span>
+      <span class="status" id="clip-energy">no clips yet</span>
+    </div>
     <div class="status" id="status"></div>
     <script src="./client.js"></script>
   </body>

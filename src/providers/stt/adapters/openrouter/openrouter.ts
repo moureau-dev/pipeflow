@@ -36,10 +36,35 @@ export interface OpenRouterSTTOptions extends STTOptions {
    * Strip common whisper hallucinations from transcripts: asterisk stage
    * directions ("*Dramatic music*"), repeated filler phrases ("Thank you.
    * Thank you."), and pure-filler clips whisper emits on near-silence
-   * ("Thank you.", "Bye.", …). Set `false` to pass transcripts through
-   * untouched. Default `true`.
+   * ("Thank you.", "E aí.", "Bye.", …). Set `false` to pass transcripts
+   * through untouched. Default `true`.
    */
   filterHallucinations?: boolean;
+  /**
+   * Extra phrases (lowercased) treated as hallucinations on top of the
+   * built-in multilingual filler list — for fillers whisper "hears" in the
+   * languages you deploy. A transcript that is *entirely* built from known
+   * fillers is dropped. Default none.
+   */
+  fillerPhrases?: string[];
+  /**
+   * Energy floor (0–1 RMS, on the raw sample range) for transcribing a
+   * buffered `pcm` clip. Near-silence clips — the ones whisper hallucinates
+   * "E aí." / "Thank you." / *stage directions* on — are skipped entirely
+   * (no transcription request, no `final`), instead of being filtered after
+   * the fact. Real speech sits far above any reasonable floor; start around
+   * `0.01`–`0.02` and raise it if artifacts persist. Only applies to
+   * `audioFormat: "pcm"` (the only format whose samples are measurable).
+   * Default: no floor (transcribe everything the client sends).
+   */
+  minClipRms?: number;
+  /**
+   * Called for every buffered `pcm` clip with its measured mean RMS and
+   * whether it was transcribed — for logging the real distribution and
+   * tuning `minClipRms` against it (speech clips sit far above artifact
+   * clips). Fires when this callback or `minClipRms` is set.
+   */
+  onClipEnergy?: (rms: number, transcribed: boolean) => void;
   /**
    * Sampling temperature (0–1) for transcription. Lower is more
    * deterministic; whisper's API default is already 0, so this is rarely the
@@ -103,12 +128,29 @@ export class OpenRouterSTT implements STT {
 
   start(options: STTOptions = {}): STTSession {
     const merged: OpenRouterSTTOptions = { ...this.options, ...options };
-    const session = new OpenRouterSession(merged);
+    // Pass the adapter's own options object as the live source: the session
+    // snapshots the per-session overrides but reads live-tunable options
+    // (minClipRms) through the adapter, so runtime changes apply to every
+    // session without recreating it.
+    const session = new OpenRouterSession(merged, this.options);
     this.sessions.add(session);
     session.on("close", () => {
       this.sessions.delete(session);
     });
     return session;
+  }
+
+  /**
+   * Live-tunable energy floor (0–1 RMS) for `pcm` clips: raise it to skip
+   * more near-silence clips (the whisper hallucinations), lower it to keep
+   * quieter speech. Applies to all sessions immediately.
+   */
+  set minClipRms(value: number | undefined) {
+    this.options.minClipRms = value;
+  }
+
+  get minClipRms(): number | undefined {
+    return this.options.minClipRms;
   }
 
   cancel(): void {
@@ -128,9 +170,18 @@ export class OpenRouterSession implements STTSession {
   private readonly silenceMs: number;
   private readonly audioFormat: OpenRouterAudioFormat;
   private readonly filterHallucinations: boolean;
+  private readonly fillerPhrases: string[] | undefined;
+  private readonly onClipEnergy: ((rms: number, transcribed: boolean) => void) | undefined;
   private readonly temperature: number | undefined;
   private readonly providerOptions: Record<string, unknown> | undefined;
   private readonly fetchImpl: FetchLike;
+  /** The adapter's live options object; live-tunable fields are read here. */
+  private readonly liveOptions: OpenRouterSTTOptions;
+
+  /** Live-tunable energy floor, read through the adapter (not a snapshot). */
+  private get minClipRms(): number | undefined {
+    return this.liveOptions.minClipRms;
+  }
 
   private chunks: Uint8Array[] = [];
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -139,7 +190,7 @@ export class OpenRouterSession implements STTSession {
   private ended = false;
   private aborted = false;
 
-  constructor(options: OpenRouterSTTOptions) {
+  constructor(options: OpenRouterSTTOptions, liveOptions: OpenRouterSTTOptions) {
     this.apiKey = options.apiKey;
     this.baseUrl = (options.baseUrl ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
     this.model = options.model ?? "openai/whisper-large-v3-turbo";
@@ -151,9 +202,12 @@ export class OpenRouterSession implements STTSession {
     this.silenceMs = options.silenceMs ?? 800;
     this.audioFormat = options.audioFormat ?? "pcm";
     this.filterHallucinations = options.filterHallucinations ?? true;
+    this.fillerPhrases = options.fillerPhrases;
+    this.onClipEnergy = options.onClipEnergy;
     this.temperature = options.temperature;
     this.providerOptions = options.providerOptions;
     this.fetchImpl = options.fetch ?? fetch;
+    this.liveOptions = liveOptions;
   }
 
   write(audio: Uint8Array): void {
@@ -207,11 +261,18 @@ export class OpenRouterSession implements STTSession {
   }
 
   /** Queue a transcription of whatever audio is buffered (serialized). */
+  /**
+   * Queue a transcription of whatever audio is buffered (serialized). The
+   * clip boundary is frozen *now* — the moment the trailing silence was
+   * detected — so audio that arrives while this transcription is queued or
+   * in flight starts the next clip instead of being swept into this one.
+   */
   private flush(): void {
+    if (this.aborted) return;
+    const audio = this.takeBuffer();
+    if (audio.byteLength === 0) return;
     this.chain = this.chain.then(async () => {
       if (this.aborted) return;
-      if (this.chunks.length === 0) return;
-      const audio = this.takeBuffer();
       await this.transcribe(audio);
     });
   }
@@ -231,6 +292,15 @@ export class OpenRouterSession implements STTSession {
   }
 
   private async transcribe(audio: Uint8Array): Promise<void> {
+    // Near-silence clips (the ones whisper hallucinates on) are dropped at
+    // the source: below the energy floor the clip is never sent, saving the
+    // transcription round trip and preventing the fabricated turn entirely.
+    if (this.audioFormat === "pcm" && (this.minClipRms !== undefined || this.onClipEnergy)) {
+      const rms = pcmRms(audio);
+      const transcribed = this.minClipRms === undefined || rms >= this.minClipRms;
+      this.onClipEnergy?.(rms, transcribed);
+      if (!transcribed) return;
+    }
     const controller = new AbortController();
     this.controllers.add(controller);
     try {
@@ -247,7 +317,9 @@ export class OpenRouterSession implements STTSession {
         signal: controller.signal,
         fetchImpl: this.fetchImpl,
       });
-      const text = this.filterHallucinations ? cleanTranscript(raw) : raw;
+      const text = this.filterHallucinations
+        ? cleanTranscript(raw, this.fillerPhrases)
+        : raw;
       if (!this.aborted && text) this.emit("final", text);
     } catch (error) {
       if (!this.aborted) {
@@ -370,13 +442,33 @@ export function toWav(pcm: Uint8Array, sampleRate: number): Uint8Array {
 }
 
 /**
+ * Mean RMS of linear16 PCM (mono), in the 0–1 sample range. Used as the
+ * clip-level energy floor: near-silence clips sit far below real speech.
+ */
+export function pcmRms(pcm: Uint8Array): number {
+  const sampleCount = Math.floor(pcm.byteLength / 2);
+  if (sampleCount === 0) return 0;
+  let sum = 0;
+  for (let i = 0; i < sampleCount; i++) {
+    const lo = pcm[i * 2]!;
+    const hi = pcm[i * 2 + 1]!;
+    const sample = lo | (hi << 8);
+    const signed = sample >= 0x8000 ? sample - 0x10000 : sample;
+    sum += signed * signed;
+  }
+  return Math.sqrt(sum / sampleCount) / 32768;
+}
+
+/**
  * Conversational fillers whisper loves to "hear" when a clip is mostly
  * silence (a trailing gap, a cough, the speaker's own voice echoing back).
- * Only a transcript that is *entirely* one of these is dropped, so a
+ * Only a transcript that is *entirely* built from these is dropped, so a
  * genuine "thank you" still passes through when it is part of a longer
- * utterance.
+ * utterance. The list is multilingual because whisper fills near-silence
+ * with the language it thinks it heard ("E aí" for Portuguese speech, …).
  */
 const FILLER_PHRASES = [
+  // English
   "thank you",
   "thanks",
   "thank you for watching",
@@ -395,7 +487,68 @@ const FILLER_PHRASES = [
   "see you",
   "okay",
   "ok",
+  // Portuguese
+  "e aí",
+  "e ai",
+  "oi",
+  "olá",
+  "ola",
+  "tudo bem",
+  "obrigado",
+  "obrigada",
+  "tá bom",
+  "ta bom",
+  "tchau",
+  "adeus",
+  "bom dia",
+  "boa noite",
+  "entendi",
+  "ah bom",
+  "é isso",
+  // Spanish
+  "hola",
+  "qué tal",
+  "que tal",
+  "vale",
+  "adiós",
+  "adios",
+  // French
+  "bonjour",
+  "merci",
+  "d'accord",
+  "au revoir",
+  // German
+  "hallo",
+  "danke",
+  "tschüss",
+  "tschuss",
 ];
+
+/**
+ * True when `text` is entirely a concatenation of known filler phrases
+ * ("E aí.", "E aí E aí", "ok ok thank you"), with punctuation and extra
+ * whitespace ignored. Repeated fillers are the classic near-silence
+ * artifact — whisper often emits them with no sentence boundary at all.
+ */
+function isFillerOnly(text: string, phrases: string[]): boolean {
+  const normalized = text
+    .toLowerCase()
+    .replace(/[.,!?;:]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (normalized.length === 0) return false;
+  const sorted = [...phrases].sort((a, b) => b.length - a.length);
+  let rest = normalized;
+  let matched = false;
+  for (;;) {
+    const found = sorted.find((phrase) => rest.startsWith(phrase));
+    if (!found) break;
+    matched = true;
+    rest = rest.slice(found.length).replace(/^\s+/, "");
+    if (rest.length === 0) break;
+  }
+  return matched && rest.length === 0;
+}
 
 /**
  * Clean a whisper transcript of its most common hallucinations, returning
@@ -405,9 +558,10 @@ const FILLER_PHRASES = [
  *    dropped — whisper transcribes background noise as stage notes.
  * 2. Consecutive repeated sentences ("Thank you. Thank you.") collapse to
  *    one — a doubled filler is a classic near-silence artifact.
- * 3. A transcript that is entirely one of the `FILLER_PHRASES` is dropped.
+ * 3. A transcript built entirely from filler phrases (the built-in
+ *    multilingual list plus `extraFillers`) is dropped.
  */
-export function cleanTranscript(text: string): string {
+export function cleanTranscript(text: string, extraFillers: string[] = []): string {
   let out = text
     .replace(/\*[^*]*\*/g, " ")
     .replace(/\s+/g, " ")
@@ -424,6 +578,7 @@ export function cleanTranscript(text: string): string {
   out = collapsed.join(" ").trim();
   if (out.length === 0) return "";
 
+  const phrases = [...FILLER_PHRASES, ...extraFillers.map((phrase) => phrase.toLowerCase())];
   const normalized = out.toLowerCase().replace(/[.!?]+$/g, "");
-  return FILLER_PHRASES.includes(normalized) ? "" : out;
+  return FILLER_PHRASES.includes(normalized) || isFillerOnly(out, phrases) ? "" : out;
 }

@@ -8,11 +8,13 @@
 //         mic stream and transcribes a clip once `silenceMs` of silence has
 //         passed (no partials; a turn arrives whole at the `final` event).
 //         Whisper hallucination filtering is on by default: near-silence
-//         "Thank you." fillers and *stage directions* are dropped. Whisper's
-//         language auto-detection can drift to unrelated scripts on
-//         short/quiet clips (Portuguese → Japanese/Korean gibberish); set
-//         `STT_LANGUAGE` to an ISO-639-1 code (e.g. `STT_LANGUAGE=pt`) to pin
-//         the language. Unset = provider-side detection.
+//         "Thank you." / "E aí." fillers and *stage directions* are dropped,
+//         and a clip-level energy floor (`minClipRms`) skips near-silence
+//         clips before they are even transcribed. Whisper's language
+//         auto-detection can drift to unrelated scripts on short/quiet clips
+//         (Portuguese → Japanese/Korean gibberish); set `STT_LANGUAGE` to an
+//         ISO-639-1 code (e.g. `STT_LANGUAGE=pt`) to pin the language. Unset
+//         = provider-side detection.
 //   LLM  meta-llama/llama-4-scout        — native tool calling (the default).
 //   TTS  fish-audio/s2.1-pro-free:free   — the SpeechPipeline buffers the LLM
 //         deltas into sentences and pre-starts the next sentence's synthesis
@@ -52,6 +54,18 @@ const stt = new OpenRouterSTT({
     // Unset = whisper auto-detects the language. Pin it with an ISO-639-1
     // code when detection drifts: `STT_LANGUAGE=pt bun run example/server.ts`.
     language: process.env.STT_LANGUAGE,
+    // Energy floor: clips whose mean RMS is below this (near-silence — the
+    // ones whisper hallucinates "E aí." / "Thank you." on) are dropped
+    // without a transcription request. Raise if artifacts persist, lower if
+    // quiet speech gets eaten. The client's VAD gates what is *sent*; this
+    // gates what is *transcribed*. The client's slider tunes it live.
+    minClipRms: 0.02,
+    // Broadcast every clip's measured energy so the client can show where
+    // speech vs. artifacts land and the slider can be set against reality.
+    onClipEnergy: (rms, transcribed) => {
+        const msg = JSON.stringify({ type: "clip-energy", rms, transcribed });
+        for (const client of clients) client.send(msg);
+    },
 });
 const tts = new OpenRouterTTS({
     apiKey,
@@ -106,6 +120,10 @@ await conversation.start();
 
 console.log("Pipeflow voice chat — whisper → llama-4-scout → fish s2.1 (free)");
 
+// Connected browsers, for broadcasting STT clip-energy readings to the slider.
+// Structural type: Bun's ServerWebSocket satisfies it without importing Bun types.
+const clients = new Set<{ send(data: string): void }>();
+
 const server = Bun.serve<{ unsubscribe: (() => void)[] }>({
     port: 3000,
     routes: { "/": index },
@@ -120,6 +138,12 @@ const server = Bun.serve<{ unsubscribe: (() => void)[] }>({
 
     websocket: {
         open(ws) {
+            clients.add(ws);
+            // Tell the client the server's current floor so the slider starts
+            // in sync.
+            ws.send(
+                JSON.stringify({ type: "minClipRms", value: stt.minClipRms ?? 0 }),
+            );
             // Forward the conversation's events to this client. Audio goes out as
             // binary — one mp3 frame per synthesized sentence — plus JSON control
             // messages. The unsubscribe list rides along on `ws.data`.
@@ -156,11 +180,18 @@ const server = Bun.serve<{ unsubscribe: (() => void)[] }>({
 
         message(ws, message) {
             if (typeof message === "string") {
-                // JSON control messages: { type: "text", text } for typed turns.
+                // JSON control messages: { type: "text", text } for typed turns,
+                // { type: "minClipRms", value } to tune the STT energy floor.
                 try {
                     const data = JSON.parse(message);
                     if (data.type === "text" && typeof data.text === "string") {
                         conversation.send({ userId: USER_ID, text: data.text });
+                    } else if (
+                        data.type === "minClipRms" &&
+                        typeof data.value === "number" &&
+                        Number.isFinite(data.value)
+                    ) {
+                        stt.minClipRms = Math.max(0, Math.min(0.5, data.value));
                     }
                 } catch {
                     // Ignore malformed frames.
@@ -177,6 +208,7 @@ const server = Bun.serve<{ unsubscribe: (() => void)[] }>({
         },
 
         close(ws) {
+            clients.delete(ws);
             for (const unsubscribe of ws.data?.unsubscribe ?? []) unsubscribe();
         },
     },

@@ -165,9 +165,23 @@ Notes:
 - Language: auto-detected by the provider when omitted. Pass an ISO-639-1
   code to force one (whisper docs say it improves accuracy and latency); the
   whisper-idiomatic `"auto"` is normalized to "omit" and never sent.
+- `temperature` (0–1) is passed through. Whisper's API default is already 0,
+  so it is rarely the hallucination lever. whisper's `prompt` cannot be set
+  directly — OpenRouter accepts but ignores the top-level field — but
+  `providerOptions: { options: { <provider>: { prompt: "…" } } }` reaches it
+  per provider (only the serving provider's options are forwarded; the key
+  must match e.g. `openai`, `groq`, `together`).
 - A turn arrives whole at the `final` event once its clip has been
   transcribed — no `partial` events (batch API). Turn latency is
   `silenceMs` + transcription time.
+- Whisper hallucination filter (default on): transcripts are cleaned before
+  emission — asterisk stage directions ("*Dramatic music*") are dropped,
+  consecutive repeated sentences ("Thank you. Thank you.") collapse to one,
+  and a transcript that is entirely a conversational filler ("Thank you.",
+  "Bye.", …) is suppressed. Set `filterHallucinations: false` for raw
+  transcripts. These artifacts come from near-silence clips and the
+  speaker's own audio echoing back — the client should trim trailing
+  silence and use `echoCancellation`/`noiseSuppression` at the source.
 - `end()` transcribes any trailing buffer; `cancel()` drops buffered audio and
   aborts in-flight requests. Clips are transcribed serially, in order.
 - Providers time out after 60s per request, so keep utterances short — which
@@ -227,10 +241,14 @@ const tts = new OpenRouterTTS({
 Notes:
 
 - Output is `pcm` by default (OpenRouter's recommendation for realtime
-  pipelines); pass `format: "mp3"` in the request for compressed output.
-- `voice` is only sent when configured: fish-audio (the default) provides its
-  own default voice and **rejects an explicit `voice` with a 400**, while
-  models like OpenAI TTS require one — set the option for those.
+  pipelines); pass `format: "mp3"` in the request — or the `format` option on
+  the adapter — for compressed output. `pcm`'s sample rate is provider-defined
+  and opaque, so mp3 is the right choice whenever the client decodes rather
+  than knowing the rate ahead of time.
+- `voice` is only sent when configured — set it for a consistent voice: the
+  default fish model accepts exactly `"alloy"` and rejects other names, and
+  omitting it lets the free variant vary the voice per request. Models like
+  OpenAI TTS require a voice.
 - Priced per character of input text; `speed` is passed through where the
   provider supports it and silently ignored elsewhere.
 - `stop()` aborts the in-flight synthesis.

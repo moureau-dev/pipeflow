@@ -8,6 +8,12 @@ import { Conversation } from "./conversation/conversation";
 
 export interface CreateConversationOptions {
   agents?: Agent[];
+  /**
+   * Execute the agents' tools automatically (default `true`). Set `false`
+   * for this conversation to resolve tool calls from your own backend via
+   * `resolveToolCall()`. Overrides the `Conversations`-level default.
+   */
+  autoExecuteTools?: boolean;
 }
 
 export interface ConversationsOptions {
@@ -15,6 +21,11 @@ export interface ConversationsOptions {
   /** Passed to conversations so `start()` can attach realtime processing. */
   stt?: STT;
   tts?: TTS;
+  /**
+   * Default for created conversations: auto-execute the agents' tools
+   * (default `true`). See `CreateConversationOptions.autoExecuteTools`.
+   */
+  autoExecuteTools?: boolean;
 }
 
 /**
@@ -25,11 +36,13 @@ export class Conversations {
   private readonly persistence: Persistence;
   private readonly stt: STT | undefined;
   private readonly tts: TTS | undefined;
+  private readonly autoExecuteTools: boolean;
 
   constructor(options: ConversationsOptions) {
     this.persistence = options.persistence;
     this.stt = options.stt;
     this.tts = options.tts;
+    this.autoExecuteTools = options.autoExecuteTools ?? true;
   }
 
   /** Create a persistent conversation. Realtime execution is separate. */
@@ -43,6 +56,7 @@ export class Conversations {
       persistence: this.persistence,
       stt: this.stt,
       tts: this.tts,
+      autoExecuteTools: options.autoExecuteTools ?? this.autoExecuteTools,
     });
   }
 

@@ -75,6 +75,23 @@ describe("OpenRouterTTS", () => {
     expect(body.response_format).toBe("mp3");
   });
 
+  test("the format option applies when the request has none", async () => {
+    const { calls, fetch } = makeFakeFetch(async () => new Response(new Uint8Array(), { status: 200 }));
+    const tts = new OpenRouterTTS({ apiKey: "test-key", format: "mp3", fetch });
+
+    await collect(tts, "hi");
+    const body = JSON.parse(calls[0]!.init.body as string) as Record<string, unknown>;
+    expect(body.response_format).toBe("mp3");
+
+    // A per-request format still wins over the option.
+    const chunks: Uint8Array[] = [];
+    for await (const chunk of tts.stream({ text: "hi", format: "pcm" })) {
+      chunks.push(chunk);
+    }
+    const body2 = JSON.parse(calls[1]!.init.body as string) as Record<string, unknown>;
+    expect(body2.response_format).toBe("pcm");
+  });
+
   test("custom model and base URL are honored", async () => {
     const { calls, fetch } = makeFakeFetch(async () => new Response(new Uint8Array(), { status: 200 }));
     const tts = new OpenRouterTTS({
@@ -122,5 +139,34 @@ describe("OpenRouterTTS", () => {
 
     tts.stop();
     await expect(gen.next()).rejects.toThrow(/aborted/);
+  });
+
+  test("concurrent streams do not cancel each other", async () => {
+    const signals: AbortSignal[] = [];
+    const { fetch } = makeFakeFetch(async (init) => {
+      signals.push(init.signal!);
+      // Hang until aborted, so both requests stay in flight.
+      await new Promise<void>((resolve) =>
+        init.signal?.addEventListener("abort", () => resolve()),
+      );
+      return new Response(new Uint8Array(), { status: 200 });
+    });
+    const tts = new OpenRouterTTS({ apiKey: "test-key", fetch });
+
+    const genA = tts.stream({ text: "A" });
+    void genA.next().catch(() => {});
+    await Bun.sleep(5);
+    const genB = tts.stream({ text: "B" });
+    void genB.next().catch(() => {});
+    await Bun.sleep(5);
+
+    // Starting the second request must not abort the first.
+    expect(signals).toHaveLength(2);
+    expect(signals[0]!.aborted).toBe(false);
+    expect(signals[1]!.aborted).toBe(false);
+
+    tts.stop();
+    expect(signals[0]!.aborted).toBe(true);
+    expect(signals[1]!.aborted).toBe(true);
   });
 });

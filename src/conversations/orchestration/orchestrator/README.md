@@ -7,7 +7,7 @@ events.
 ```text
 audio-in ──► STT ──► turn ──► router ──► agent / coordination ──► TTS ──► audio-out
                                                       │
-                                                      └─► tool-call ──► app resolves ──► resume
+                                                      └─► tool-call ──► tool runs ──► resume
 ```
 
 `Conversation.start()` attaches an orchestrator automatically (with an STT
@@ -28,8 +28,8 @@ orchestrator/
 ├── routing/                  pickAgent / findAddressedAgent / findAgentByName
 ├── generation/               GenerationRunner: the shared LLM + tool-call loop
 ├── speech/                   SpeechPipeline: delta → sentence chunker → TTS
-├── tools/                    ToolCallManager: tool-call waiters, timeouts,
-│                             cancellation
+├── tools/                    ToolCallManager: auto-executes agent tools,
+│                             waiters, timeouts, cancellation
 └── coordination-runner/      CoordinationRunner: suspension/resume stack,
                               budgets, delegation
 ```
@@ -57,9 +57,14 @@ Each finalized participant turn is routed:
   path (direct, coordination, delegated) inherits it.
 - **Streaming**: LLM deltas are buffered into sentences and synthesized to TTS
   immediately; audio chunks reach the application as `audio` events.
-- **Tool calls** pause the generation; the application resolves them through
-  `tool-call` / `resolveToolCall` events. Agent tools always run in *your*
-  backend.
+- **Tools auto-execute** (default): a tool call pauses the generation while the
+  framework runs the matching agent tool and feeds the result — or a caught
+  error — back into the model loop, exactly like `Agent.run()`. The `tool-call`
+  event still fires for every call, so the application can observe (or log)
+  without resolving. With `autoExecuteTools: false` the orchestrator hands the
+  call to the application instead, which executes in its own backend and
+  reports back through `resolveToolCall()`. Both paths are bounded by
+  `toolTimeoutMs`.
 - **Interruption**: `interrupt()` bumps a generation epoch, aborts every LLM
   and TTS stream, force-resolves tool waiters, and discards the cancelled
   generation from the transcript.
@@ -86,6 +91,8 @@ Each finalized participant turn is routed:
 
 `OrchestratorOptions` — `conversation`, `agents`, `llm` (defaults to the first
 agent's), `stt`, `tts`, `persistence`, `toolTimeoutMs`, `maxToolIterations`,
+`autoExecuteTools` (default `true` — run the agents' tools automatically; set
+`false` for the app-managed `tool-call` / `resolveToolCall` contract),
 `coordinations` (a name-keyed record of extra coordination definitions, e.g.
 `{ clarify: { prompt: buildClarifyPrompt() } }`), `maxCoordinationSteps`,
 `temperature`, `maxTokens`, `historyWindow` (default `{ maxTurns: 5,

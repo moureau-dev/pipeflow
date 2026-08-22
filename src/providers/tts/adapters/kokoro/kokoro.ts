@@ -44,7 +44,7 @@ export class KokoroTTS implements TTS {
   private readonly chunkSize: number;
   private readonly streaming: boolean;
   private readonly fetchImpl: FetchLike;
-  private abort: AbortController | null = null;
+  private readonly streams = new Set<AbortController>();
 
   constructor(options: KokoroOptions = {}) {
     this.baseUrl = (options.baseUrl ?? "http://localhost:8880").replace(/\/+$/, "");
@@ -57,7 +57,10 @@ export class KokoroTTS implements TTS {
   }
 
   stop(): void {
-    this.abort?.abort();
+    // Abort every in-flight synthesis. Streams are tracked individually so
+    // concurrent requests (the speech pipeline pre-starts the next sentence
+    // while the current one is still streaming) do not cancel each other.
+    for (const controller of this.streams) controller.abort();
   }
 
   async *stream(request: TTSRequest): AsyncGenerator<Uint8Array> {
@@ -65,9 +68,8 @@ export class KokoroTTS implements TTS {
       throw new Error("KokoroTTS requires request.text");
     }
 
-    this.abort?.abort();
     const controller = new AbortController();
-    this.abort = controller;
+    this.streams.add(controller);
 
     try {
       const body: Record<string, unknown> = {
@@ -170,9 +172,7 @@ export class KokoroTTS implements TTS {
         yield audioBuffer;
       }
     } finally {
-      if (this.abort === controller) {
-        this.abort = null;
-      }
+      this.streams.delete(controller);
     }
   }
 }

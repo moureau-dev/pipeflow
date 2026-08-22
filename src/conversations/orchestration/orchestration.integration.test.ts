@@ -216,11 +216,15 @@ describe("coordination", () => {
     expect(sub.timing?.firstAudioAt).toBeUndefined();
   });
 
-  test("dispatched specialists keep their own tools running in the app backend", async () => {
+  test("auto-executes dispatched specialists' tools", async () => {
+    let scheduleRuns = 0;
     const getSchedule = new Tool({
       name: "get_schedule",
       description: "Get the day's schedule.",
-      execute: async () => "free Tuesday afternoon",
+      execute: async () => {
+        scheduleRuns++;
+        return "free Tuesday afternoon";
+      },
     });
 
     const harness = await setupRoster({
@@ -246,22 +250,19 @@ describe("coordination", () => {
       tools: { "Calendar Agent": [getSchedule] },
     });
 
+    // Visibility only: no app handler resolves the call — the framework
+    // runs the specialist's tool and feeds its result back.
     const toolCalls: string[] = [];
     harness.conversation.on("tool-call", (payload) => {
       toolCalls.push(payload.call.name);
-      if (payload.call.name === "get_schedule") {
-        harness.conversation.resolveToolCall({
-          id: payload.call.id,
-          result: "free Tuesday afternoon",
-        });
-      }
     });
 
     await speak(harness, "alice", "Check my Tuesday.");
 
-    // The specialist's tool was surfaced to the application, executed
-    // there, and its result fed back into the specialist's LLM loop.
+    // The specialist's tool was surfaced for visibility and auto-executed
+    // exactly once by the framework.
     expect(toolCalls).toEqual(["get_schedule"]);
+    expect(scheduleRuns).toBe(1);
     const calendar = harness.llms.get("Calendar Agent")!;
     expect(calendar.requests).toHaveLength(2);
     expect(calendar.requests[1]!.messages.at(-1)).toEqual({

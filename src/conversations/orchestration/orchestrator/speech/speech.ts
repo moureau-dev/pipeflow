@@ -71,6 +71,12 @@ export class SpeechPipeline {
     // Buffering boundary: the first sentence flushed to TTS.
     this.conversation.noteTiming("firstTtsText");
     const speechEpoch = this.speechEpoch;
+    // Begin synthesis immediately — the provider request overlaps the previous
+    // sentence's playback. Consuming the first chunk eagerly is what starts
+    // the request; delivery still happens in order through the serial chain.
+    const stream = tts.stream({ text: sentence });
+    const firstChunk = stream.next();
+    void firstChunk.catch(() => {});
     this.chain = this.chain.then(async () => {
       if (!this.isCurrent(epoch) || this.speechEpoch !== speechEpoch) {
         return;
@@ -79,7 +85,20 @@ export class SpeechPipeline {
       this.conversation.noteTiming("firstTtsRequest");
       try {
         let first = true;
-        for await (const chunk of tts.stream({ text: sentence })) {
+        const head = await firstChunk;
+        if (!head.done) {
+          first = false;
+          // The provider produced its first audio chunk.
+          this.conversation.noteTiming("firstTtsAudio");
+          this.conversation.pushAudio({
+            data: head.value,
+            timestamp: Date.now(),
+            sequence: this.audioSequence++,
+          });
+        }
+        // The generator's async iterator is the generator itself, so this
+        // continues from where the eager `next()` left off.
+        for await (const chunk of stream) {
           if (!this.isCurrent(epoch) || this.speechEpoch !== speechEpoch) {
             break;
           }

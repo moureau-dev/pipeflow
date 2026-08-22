@@ -42,6 +42,15 @@ current generation's text as LLM deltas arrive (including the agent name when
 the generation is known); `generation-complete` fires exactly once when the
 top-level generation finishes — the semantic boundary consumers can wait on.
 
+## Tool calls
+
+Agent tools auto-execute by default: the orchestrator runs the matching tool
+and feeds the result back into the generation, so applications need no
+`tool-call` handler. The `tool-call` and `tool-call-result` events still fire
+for every call — for observation and logging. Set `autoExecuteTools: false`
+on `Pipeflow`, `create()`, or the `Conversation` to take over: listen for
+`tool-call` and resolve each call yourself with `resolveToolCall()`.
+
 ## Orchestrator-facing output
 
 `pushTurn`, `pushTranscript`, `pushGeneration`, `pushTextDelta`,

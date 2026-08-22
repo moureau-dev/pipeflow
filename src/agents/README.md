@@ -18,9 +18,10 @@ const jarvis = pipeflow.agent({
   It *performs* work: `input → LLM → output`, executing tools along the way.
   See `agent.ts`.
 - **Tool** — a capability exposed from *your* backend: a name, a description,
-  and an `execute()` function. Tools never run inside Pipeflow — the
-  orchestrator emits `tool-call` events and your application resolves them.
-  See `tools/tools.ts`.
+  and an `execute()` function. In a conversation the orchestrator runs it
+  automatically (auto-execute, like `run()`) and feeds the result back; with
+  `autoExecuteTools: false` it emits `tool-call` events and your application
+  executes and resolves them. See `tools/tools.ts`.
 - **`run()`** — invoke an agent standalone (no conversation): streams the LLM,
   executes any requested tools, and returns the final text plus the full
   message history and executed tool calls. Tool calls the model requests

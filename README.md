@@ -309,7 +309,8 @@ The conversation emits a typed event stream the application can subscribe to:
 * `transcript` — a transcript entry
 * `audio` — generated audio to play
 * `generation` — an agent generation
-* `tool-call` / `tool-call-result` — tool execution round trips
+* `tool-call` / `tool-call-result` — every tool round trip (auto-executed by
+  default; observable even when the framework runs the tool)
 * `interrupt` — an interruption occurred
 * `error` — a provider failure
 * `start` / `stop` / `state` — lifecycle
@@ -515,9 +516,8 @@ const jarvis = pipeflow.agent({
 });
 ```
 
-Tools execute in **your backend**.
-
-Pipeflow does not execute arbitrary application code.
+Tools execute in **your backend**: the `execute` function is your code, and it
+runs in your process — Pipeflow only invokes the callbacks you registered.
 
 ```text
                     Pipeflow
@@ -540,27 +540,49 @@ Pipeflow does not execute arbitrary application code.
 
 This allows tools to access your database, APIs, Discord bot, business logic, filesystem, or anything else your application controls.
 
-In a conversation, tool calls never execute inside Pipeflow. The orchestrator
-emits a `tool-call` event with the requested tool and its arguments; your
-backend executes it and reports back:
+### In a conversation: tools auto-execute
+
+Attach tools to an agent and they just work — the orchestrator runs each tool
+and feeds the result back into the generation (same loop as `Agent.run()`):
 
 ```ts
-conversation.on("tool-call", async ({ call }) => {
-  const result = await myBackend.execute(call.name, call.arguments);
+const jarvis = pipeflow.agent({
+  name: "Jarvis",
+  context: "You are a helpful assistant.",
+  tools: [getWeather],
+});
 
-  conversation.resolveToolCall({
-    id: call.id,
-    result,
-  });
+const conversation = await pipeflow.conversations.create({ agents: [jarvis] });
+// no tool-call handler needed — get_weather runs automatically
+```
+
+The `tool-call` (and `tool-call-result`) events still fire for every call, so
+you can observe or log them. A thrown tool error is caught and returned to the
+model as `{ "error": ... }` so the agent can recover; an unknown tool name
+reports `Unknown tool "..."` the same way. Tool calls the model issues together
+run concurrently, and a hung tool is bounded by `toolTimeoutMs` (default 30s).
+
+### Opt out: resolve tool calls yourself
+
+When a tool needs approval, or runs in a *different* backend, pass
+`autoExecuteTools: false` (on `Pipeflow`, `pipeflow.conversations.create()`, or
+`Conversation`) and the orchestrator hands the call to you:
+
+```ts
+const conversation = await pipeflow.conversations.create({
+  agents: [jarvis],
+  autoExecuteTools: false,
+});
+
+conversation.on("tool-call", async ({ call }) => {
+  // call.arguments is already parsed JSON
+  const result = await myBackend.executeTool(call.name, call.arguments);
+  conversation.resolveToolCall({ id: call.id, result });
 });
 ```
 
 The agent's narration continues while the tool runs, and the generation resumes
 with the tool result once it is resolved.
-
-Tool calls the model requests together run concurrently: `run()` executes
-them in parallel, and in a conversation your backend resolves them in
-parallel.
 
 ## Meeting transcription
 

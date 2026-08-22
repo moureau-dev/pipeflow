@@ -194,6 +194,8 @@ export function setup(options: {
   llm?: LLM;
   /** Override the conversation-history window (default 5 turns / 4k chars). */
   historyWindow?: HistoryWindow | false;
+  /** Auto-execute the agent's tools (default true); see OrchestratorOptions. */
+  autoExecuteTools?: boolean;
 }): Promise<Harness> {
   return (async () => {
     const persistence = new MemoryPersistence();
@@ -220,6 +222,7 @@ export function setup(options: {
       persistence,
       toolTimeoutMs: options.toolTimeoutMs ?? 30_000,
       historyWindow: options.historyWindow,
+      autoExecuteTools: options.autoExecuteTools,
     });
 
     conversation.start();
@@ -275,6 +278,8 @@ export function setupRoster(options: {
   tools?: Record<string, Tool<never, unknown>[]>;
   coordinations?: Record<string, { prompt: string; llm: FakeLLM }>;
   maxCoordinationSteps?: number;
+  /** Auto-execute the agents' tools (default true); see OrchestratorOptions. */
+  autoExecuteTools?: boolean;
 }): Promise<RosterHarness> {
   return (async () => {
     const persistence = new MemoryPersistence();
@@ -317,6 +322,7 @@ export function setupRoster(options: {
       llm: coordinatorLlm,
       coordinations: options.coordinations,
       maxCoordinationSteps: options.maxCoordinationSteps,
+      autoExecuteTools: options.autoExecuteTools,
       stt,
       tts,
       persistence,

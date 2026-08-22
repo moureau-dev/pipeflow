@@ -7,6 +7,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Whisper hallucination filter** — `OpenRouterSTT` cleans transcripts by
+  default before emission: asterisk stage directions (`*Dramatic music*`) are
+  dropped, consecutive repeated sentences (`Thank you. Thank you.`) collapse
+  to one, and transcripts that are entirely a conversational filler
+  (`Thank you.`, `Bye.`, …) are suppressed. `filterHallucinations: false`
+  returns raw transcripts. These artifacts come from near-silence clips and
+  speaker echo, so the example also trims trailing silence and enables
+  `echoCancellation`/`noiseSuppression` at the mic.
+- **STT sampling/passthrough options** — `OpenRouterSTT` accepts `temperature`
+  and `providerOptions` (serialized as the multipart `provider` field).
+  OpenRouter ignores whisper's top-level `prompt`, so per-provider options
+  (`providerOptions: { options: { groq: { prompt: "…" } } }`) are the only
+  route to whisper's prompt.
+- **STT language pinning** — `OpenRouterSTT` accepts `language` (ISO-639-1):
+  whisper's auto-detection drifts to unrelated scripts on short or quiet
+  clips (Portuguese speech transcribed as Japanese/Korean), so forcing the
+  code (`language: "pt"`) keeps transcripts on the spoken language and
+  reduces hallucinations; the whisper-idiomatic `"auto"` is normalized to
+  "omit" (provider-side detection). The WebSocket example passes
+  `STT_LANGUAGE` through, leaving detection to the provider when unset.
+- **OpenRouter TTS output format option** — `OpenRouterTTS` accepts
+  `format: "pcm" | "mp3"` for requests that don't specify one. `pcm`'s sample
+  rate is provider-defined and opaque, so mp3 (self-describing) is the choice
+  when the client decodes.
+- **WebSocket voice-chat example** — `example/` runs a full voice loop in one
+  Bun process (whisper → llama-4-scout → fish s2.1 free) over a WebSocket,
+  with client-side VAD and per-sentence, pipelined TTS delivered as decodable
+  mp3 frames.
+- **Conversation tools auto-execute** — agents' tools now run automatically in
+  a conversation, exactly like `Agent.run()`: the orchestrator executes the
+  matching tool and feeds the result (or a caught error) back into the model
+  loop, so no `tool-call` handler is needed. The `tool-call` and
+  `tool-call-result` events still fire for visibility. Opt out with
+  `autoExecuteTools: false` (on `Pipeflow`, `conversations.create()`, or
+  `Conversation`) to keep the application-managed contract — listen for
+  `tool-call` and resolve each call yourself with `resolveToolCall()`, e.g.
+  for approval flows or tools that run in a different backend. Unknown tool
+  names and thrown tool errors surface to the model as `{ "error": ... }` so
+  it can recover, and a hung tool is bounded by `toolTimeoutMs`.
+
+### Fixed
+
+- **Example tool handler removed** — the WebSocket example no longer
+  hand-wires `tool-call` → `resolveToolCall` (with an unsafe `execute` cast);
+  the agent's `get_weather` tool auto-executes.
+
+- **Barge-in cuts the agent's audio on the client** — the example previously
+  kept playing already-synthesized sentences after an interrupt (the server
+  aborts generation, but queued mp3 frames were still in the client's
+  playback queue). The server now forwards the conversation's `interrupt`
+  event and the client cuts the current buffer and drops the queue the moment
+  the mic hears the user, on a new turn, or on the server message.
+- **Example voice drift** — fish's free TTS variant varies the voice per
+  request when `voice` is omitted; the example now pins `voice: "alloy"`.
+- **Example playback speed** — raw pcm has a provider-defined sample rate
+  (fish ≈44.1 kHz), so playing it at a guessed 16 kHz ran ≈2.7× slow; the
+  example now requests mp3 and the client decodes each frame at its real
+  rate.
+
 ## [0.0.2] - 2026-08-22
 
 ### Added
@@ -24,7 +85,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Favorite models list** — `ToolModeBenchmark` ships `FAVORITE_MODELS` (the seven models measured as usable: llama-4-scout, gemini-2.5-flash-lite, nova-micro, nova-lite, ling-3.0-flash, lunaris-8b, gpt-oss-20b) plus the `StringOr`/`FavoriteModel` type — any model id, with the favorites autocompleted — and `bun scripts/envelope-vs-native.ts` benchmarks them by default (`MODELS=...` overrides).
 - **Tool argument schemas** — `Tool`/`PipeflowTool` accepts `schema: { in, out }` (zod): `in` derives the LLM-facing JSON parameters, `out` (defaulting to `in`) validates the arguments at `execute()` time and may transform them. One schema keeps the model contract and the `execute` signature in sync and turns garbage model arguments into a clear tool error instead of a crash inside the tool. `parameters` remains as the hand-written-JSON-schema escape hatch (mutually exclusive).
 - **OpenRouter STT adapter** — `OpenRouterSTT` transcribes through the `/api/v1/audio/transcriptions` endpoint (default model `openai/whisper-large-v3-turbo`). OpenRouter's STT is batch-only, so the session buffers the incoming linear16 PCM, wraps each utterance in a WAV container, and transcribes a clip after `silenceMs` (default 800ms) of silence, emitting one `final` per clip (`end()` flushes the tail, `cancel()` aborts). No interim results — no `partial` events.
-- **OpenRouter TTS adapter** — `OpenRouterTTS` synthesizes through the OpenAI-compatible `/api/v1/audio/speech` endpoint (default model `fish-audio/s2.1-pro-free:free`), returning raw audio bytes re-chunked for playback. `pcm` output by default (mp3 on request), `voice`/`speed` pass-through, and `stop()` aborts the in-flight synthesis.
+- **OpenRouter TTS adapter** — `OpenRouterTTS` synthesizes through the OpenAI-compatible `/api/v1/audio/speech` endpoint (default model `fish-audio/s2.1-pro-free:free`), returning raw audio bytes re-chunked for playback. `pcm` output by default (mp3 on request), `voice`/`speed` pass-through (set `voice: "alloy"` for a consistent voice on fish), and `stop()` aborts the in-flight synthesis.
 
 ### Fixed
 

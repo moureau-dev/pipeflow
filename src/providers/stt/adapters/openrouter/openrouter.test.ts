@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { OpenRouterSTT, toWav } from "./openrouter";
+import { OpenRouterSTT, cleanTranscript, toWav } from "./openrouter";
 import type { FetchLike } from "../../../shared";
 
 /** A fetch double that records requests and lets each test script responses. */
@@ -204,6 +204,106 @@ describe("OpenRouterSTT", () => {
     await Bun.sleep(10);
 
     expect(finals).toEqual([]);
+  });
+
+  test("hallucinated fillers and stage directions are filtered by default", async () => {
+    const texts = ["Thank you. Thank you.", "*Dramatic music*", "Bye.", "real words"];
+    let n = 0;
+    const { fetch } = makeFakeFetch(async () => ok(texts[n++]!));
+    const stt = new OpenRouterSTT({ apiKey: "test-key", silenceMs: 5, fetch });
+    const session = stt.start();
+    const finals: string[] = [];
+    session.on("final", (text) => finals.push(text));
+
+    for (let i = 0; i < texts.length; i++) {
+      session.write(new Uint8Array([i + 1]));
+      await Bun.sleep(20);
+    }
+
+    expect(finals).toEqual(["real words"]);
+  });
+
+  test("filterHallucinations: false passes transcripts through untouched", async () => {
+    const { fetch } = makeFakeFetch(async () => ok("Thank you. *music*"));
+    const stt = new OpenRouterSTT({
+      apiKey: "test-key",
+      filterHallucinations: false,
+      silenceMs: 5,
+      fetch,
+    });
+    const session = stt.start();
+    const finals: string[] = [];
+    session.on("final", (text) => finals.push(text));
+
+    session.write(new Uint8Array([1]));
+    await Bun.sleep(30);
+
+    expect(finals).toEqual(["Thank you. *music*"]);
+  });
+
+  test("temperature and provider options are forwarded on the form", async () => {
+    const { calls, fetch } = makeFakeFetch(async () => ok("hello"));
+    const stt = new OpenRouterSTT({
+      apiKey: "test-key",
+      temperature: 0,
+      providerOptions: { options: { groq: { prompt: "Transcribe exactly." } } },
+      silenceMs: 5,
+      fetch,
+    });
+    const session = stt.start();
+    session.on("final", () => {});
+
+    session.write(new Uint8Array([1]));
+    await Bun.sleep(30);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("temperature")).toBe("0");
+    expect(form.get("provider")).toBe(
+      JSON.stringify({ options: { groq: { prompt: "Transcribe exactly." } } }),
+    );
+  });
+
+  test("no temperature/provider fields when unset", async () => {
+    const { calls, fetch } = makeFakeFetch(async () => ok("hello"));
+    const stt = new OpenRouterSTT({ apiKey: "test-key", silenceMs: 5, fetch });
+    const session = stt.start();
+    session.on("final", () => {});
+
+    session.write(new Uint8Array([1]));
+    await Bun.sleep(30);
+
+    const form = calls[0]!.init.body as FormData;
+    expect(form.get("temperature")).toBeNull();
+    expect(form.get("provider")).toBeNull();
+  });
+});
+
+describe("cleanTranscript", () => {
+  test("drops asterisk stage directions", () => {
+    expect(cleanTranscript("I'm here. *Dramatic music* Please call me.")).toBe(
+      "I'm here. Please call me.",
+    );
+  });
+
+  test("collapses consecutive repeated sentences", () => {
+    expect(cleanTranscript("Thank you. Thank you.")).toBe(""); // filler after collapse
+    expect(cleanTranscript("Yes, I can. Yes, I can. Let's go.")).toBe(
+      "Yes, I can. Let's go.",
+    );
+  });
+
+  test("drops pure-filler transcripts but keeps fillers inside real speech", () => {
+    expect(cleanTranscript("Thank you.")).toBe("");
+    expect(cleanTranscript("bye bye")).toBe("");
+    expect(cleanTranscript("Thank you. That was really helpful.")).toBe(
+      "Thank you. That was really helpful.",
+    );
+  });
+
+  test("leaves normal speech untouched", () => {
+    expect(cleanTranscript("What's the weather like today?")).toBe(
+      "What's the weather like today?",
+    );
   });
 });
 

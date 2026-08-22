@@ -297,7 +297,7 @@ describe("Orchestrator", () => {
     ]);
   });
 
-  test("pauses for a tool call, emits it to the app, and resumes with the result", async () => {
+  test("pauses for a tool call, emits it to the app, and resolves with the app's result", async () => {
     const getWeather = new Tool<{ city: string }, string>({
       name: "get_weather",
       description: "Get the weather for a city.",
@@ -306,6 +306,9 @@ describe("Orchestrator", () => {
 
     const harness = await setup({
       tools: [getWeather],
+      // The app-managed path: the orchestrator hands the call to the
+      // application instead of running the tool itself.
+      autoExecuteTools: false,
       script: async function* (request) {
         if (request.messages.at(-1)?.role === "tool") {
           yield { type: "delta", content: "It is sunny in Paris!" };
@@ -361,14 +364,69 @@ describe("Orchestrator", () => {
     );
   });
 
-  test("times out tool calls the application never resolves", async () => {
+  test("auto-executes the agent's tools and feeds the results back", async () => {
+    const getWeather = new Tool<{ city: string }, string>({
+      name: "get_weather",
+      description: "Get the weather for a city.",
+      execute: async ({ city }) => `sunny in ${city}`,
+    });
+
+    const harness = await setup({
+      tools: [getWeather],
+      script: async function* (request) {
+        if (request.messages.at(-1)?.role === "tool") {
+          yield { type: "delta", content: "It is sunny in Paris!" };
+          yield { type: "done" };
+          return;
+        }
+        yield { type: "delta", content: "Let me check the weather for you. " };
+        yield {
+          type: "tool_call",
+          id: "call_1",
+          name: "get_weather",
+          arguments: '{"city":"Paris"}',
+        };
+        yield { type: "done" };
+      },
+    });
+
+    // No app handler resolves the call — the framework runs the tool.
+    const toolCalls: ToolCall[] = [];
+    harness.conversation.on("tool-call", (payload) => toolCalls.push(payload.call));
+
+    await speak(harness, "alice", "What is the weather in Paris?");
+
+    // The call was still emitted for app visibility, with parsed arguments.
+    expect(toolCalls).toEqual([
+      { id: "call_1", name: "get_weather", arguments: { city: "Paris" } },
+    ]);
+
+    // The tool's own result fed the second LLM round trip — no app resolve.
+    expect(harness.llm.requests).toHaveLength(2);
+    expect(harness.llm.requests[1]!.messages.at(-1)).toEqual({
+      role: "tool",
+      toolCallId: "call_1",
+      name: "get_weather",
+      content: '"sunny in Paris"',
+    });
+
+    // Nothing is left pending on the conversation.
+    expect(harness.conversation.pendingToolCalls).toEqual([]);
+
+    const transcript = await harness.persistence.listTranscript("conv-1");
+    expect(transcript.at(-1)?.toString()).toBe(
+      "Jarvis: Let me check the weather for you. It is sunny in Paris!",
+    );
+  });
+
+  test("times out a hung auto-executed tool", async () => {
     const harness = await setup({
       toolTimeoutMs: 20,
       tools: [
         new Tool({
           name: "get_weather",
           description: "Weather.",
-          execute: () => "sunny",
+          execute: () => new Promise(() => {}),
         }),
       ],
       script: async function* (request) {
@@ -382,7 +440,8 @@ describe("Orchestrator", () => {
       },
     });
 
-    // No listener resolves the tool call — it must time out gracefully.
+    // The framework runs the tool, but it never resolves — the timeout
+    // bounds the round trip and the model can recover.
     await speak(harness, "alice", "What is the weather?");
 
     const second = harness.llm.requests[1]!.messages.at(-1);

@@ -77,19 +77,21 @@ describe("SpeechPipeline", () => {
     conversation.on("audio", (payload) => audio.push(payload.audio.sequence));
     const pipeline = new SpeechPipeline({ tts, conversation, isCurrent: () => true });
 
-    // A complete sentence queues a synthesis request; stop() bumps the speech
-    // epoch before the chain runs, so the request never fires.
+    // A complete sentence pre-starts its synthesis request immediately, but
+    // stop() bumps the speech epoch before the chain delivers, so the audio
+    // never reaches the app.
     pipeline.feed("Hello world!", 0);
     pipeline.stop();
     await pipeline.waitForIdle();
-    expect(tts.requests).toHaveLength(0);
+    expect(tts.requests).toHaveLength(1); // pre-started, then dropped
     expect(audio).toHaveLength(0);
 
-    // A partial sentence is discarded from the chunker too.
+    // A partial sentence is discarded from the chunker before it is spoken.
     pipeline.feed("More words", 0);
     pipeline.stop();
     await pipeline.waitForIdle();
-    expect(tts.requests).toHaveLength(0);
+    expect(tts.requests).toHaveLength(1);
+    expect(audio).toHaveLength(0);
   });
 
   test("a stale generation drops its speech", async () => {
@@ -103,7 +105,30 @@ describe("SpeechPipeline", () => {
     pipeline.feed("Hello world!", 1);
     current = false; // interrupt: epoch bumped
     await pipeline.waitForIdle();
-    expect(tts.requests).toHaveLength(0);
+    expect(tts.requests).toHaveLength(1); // pre-started, then dropped
     expect(audio).toHaveLength(0);
+  });
+
+  test("pre-starts the next sentence while the current one is still streaming", async () => {
+    const tts = new FakeTTS((text) => [encode(text + " (a)"), encode(text + " (b)")]);
+    const conversation = makeConversation();
+    const audio: number[] = [];
+    conversation.on("audio", (payload) => audio.push(payload.audio.sequence));
+    const pipeline = new SpeechPipeline({ tts, conversation, isCurrent: () => true });
+
+    // Both sentences are spoken before the chain delivers either one.
+    pipeline.feed("First sentence!", 0);
+    pipeline.feed("Second sentence!", 0);
+
+    // Pre-start: both synthesis requests are already in flight, rather than
+    // the second waiting for the first to finish synthesizing.
+    expect(tts.requests.map((r) => r.text)).toEqual([
+      "First sentence!",
+      "Second sentence!",
+    ]);
+
+    await pipeline.waitForIdle();
+    // Delivery remains strictly in order: sentence one, then sentence two.
+    expect(audio).toEqual([0, 1, 2, 3]);
   });
 });

@@ -1,4 +1,5 @@
 import type { Agent } from "../../../agents/agent";
+import type { Tool } from "../../../agents/tools/tools";
 import type { Conversation } from "../../conversation/conversation";
 import type { Persistence } from "../../../persistence/persistence";
 import type {
@@ -35,10 +36,19 @@ export interface OrchestratorOptions {
   tts?: TTS;
   /** Used to rehydrate conversation history on start. */
   persistence?: Persistence;
-  /** How long to wait for the application to resolve a tool call. */
+  /** How long to wait for a tool call to resolve (auto-executed or app-managed). */
   toolTimeoutMs?: number;
   /** Safety bound on tool-call round trips per generation. */
   maxToolIterations?: number;
+  /**
+   * Execute the agents' tools automatically (default `true`), feeding each
+   * tool's result — or a caught error — back into the model loop, like
+   * `Agent.run()` does. Set `false` for the application-managed contract:
+   * listen for `tool-call` events and resolve each call yourself with
+   * `conversation.resolveToolCall()`. The `tool-call` event fires in both
+   * modes, so apps can observe every call.
+   */
+  autoExecuteTools?: boolean;
   /**
    * Additional coordinations the runtime can delegate to, registered by
    * name (the key is the coordination's name).
@@ -73,13 +83,15 @@ interface SttSessionEntry {
  * ```text
  * audio-in ──► STT ──► turn ──► coordinator ──► agent ──► LLM ──► TTS ──► audio-out
  *                                    │
- *                                    └─► tool-call ──► app resolves ──► resume
+ *                                    └─► tool-call ──► tool runs ──► resume
  * ```
  *
  * Deltas stream to TTS immediately (so the agent can narrate while a tool
- * runs), tool calls pause the generation until the application resolves
- * them, and interruptions cancel the current generation — discarding any
- * stale tool results or audio via a generation epoch.
+ * runs), tool calls pause the generation while the tool executes — the
+ * framework runs the agent's own tools by default, or the application
+ * resolves them when `autoExecuteTools` is off — and interruptions cancel
+ * the current generation, discarding any stale tool results or audio via a
+ * generation epoch.
  */
 export class Orchestrator {
   private readonly conversation: Conversation;
@@ -135,7 +147,18 @@ export class Orchestrator {
       conversation: this.conversation,
       isCurrent: (epoch) => this.started && epoch === this.epoch,
     });
-    this.tools = new ToolCallManager(this.conversation, options.toolTimeoutMs ?? 30_000);
+    // The registry spans every agent's tools, so top-level generations and
+    // delegated sub-generations both auto-execute the tools the routed agent
+    // actually registered (the definitions each LLM sees are scoped to that
+    // agent; on a name collision the last agent wins).
+    const toolRegistry = new Map<string, Tool<never, unknown>>();
+    for (const agent of agents) {
+      for (const tool of agent.tools) toolRegistry.set(tool.name, tool);
+    }
+    this.tools = new ToolCallManager(this.conversation, options.toolTimeoutMs ?? 30_000, {
+      tools: toolRegistry,
+      autoExecute: options.autoExecuteTools ?? true,
+    });
     this.generation = new GenerationRunner();
     this.coordination = new CoordinationRunner({
       conversation: this.conversation,

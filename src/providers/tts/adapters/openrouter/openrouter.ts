@@ -12,13 +12,20 @@ export interface OpenRouterTTSOptions {
    */
   model?: string;
   /**
-   * Default voice, sent when the request carries none. Omitted entirely when
-   * unset: providers with a built-in default voice (e.g. fish-audio) accept
-   * omission, and some reject an explicit `voice` outright — while providers
-   * that require one (e.g. OpenAI TTS) need it set. Voice support varies by
-   * model and provider.
+   * Default voice, sent when the request carries none. Set it for a
+   * consistent voice: the default fish model accepts exactly `"alloy"` and
+   * rejects other names, and omitting `voice` lets the free variant vary the
+   * voice per request. Models like OpenAI TTS require a voice. Voice support
+   * varies by model and provider.
    */
   voice?: string;
+  /**
+   * Output format used when the request doesn't specify one. `"pcm"` (the
+   * default) is the lowest-latency realtime format, but its sample rate is
+   * provider-defined and opaque — clients must know it. `"mp3"` is
+   * self-describing: decoders read the real rate from the stream.
+   */
+  format?: "pcm" | "mp3";
   /** Size of the audio chunks yielded from the response stream. Default 8192. */
   chunkSize?: number;
   /** Injectable fetch, mainly for tests. */
@@ -38,9 +45,10 @@ export class OpenRouterTTS implements TTS {
   private readonly baseUrl: string;
   private readonly model: string;
   private readonly voice: string;
+  private readonly format: "pcm" | "mp3";
   private readonly chunkSize: number;
   private readonly fetchImpl: FetchLike;
-  private abort: AbortController | null = null;
+  private readonly streams = new Set<AbortController>();
 
   constructor(options: OpenRouterTTSOptions) {
     if (!options.apiKey) {
@@ -50,12 +58,16 @@ export class OpenRouterTTS implements TTS {
     this.baseUrl = (options.baseUrl ?? "https://openrouter.ai/api/v1").replace(/\/+$/, "");
     this.model = options.model ?? "fish-audio/s2.1-pro-free:free";
     this.voice = options.voice ?? "";
+    this.format = options.format ?? "pcm";
     this.chunkSize = options.chunkSize ?? 8192;
     this.fetchImpl = options.fetch ?? fetch;
   }
 
   stop(): void {
-    this.abort?.abort();
+    // Abort every in-flight synthesis. Streams are tracked individually so
+    // concurrent requests (the speech pipeline pre-starts the next sentence
+    // while the current one is still streaming) do not cancel each other.
+    for (const controller of this.streams) controller.abort();
   }
 
   async *stream(request: TTSRequest): AsyncGenerator<Uint8Array> {
@@ -63,9 +75,8 @@ export class OpenRouterTTS implements TTS {
       throw new Error("OpenRouterTTS requires request.text");
     }
 
-    this.abort?.abort();
     const controller = new AbortController();
-    this.abort = controller;
+    this.streams.add(controller);
 
     try {
       const body: Record<string, unknown> = {
@@ -77,7 +88,7 @@ export class OpenRouterTTS implements TTS {
         ...(request.voice ?? this.voice ? { voice: request.voice ?? this.voice } : {}),
         // OpenRouter supports mp3 and pcm only; anything else (or
         // unspecified) maps to pcm, the lower-latency realtime format.
-        response_format: request.format === "mp3" ? "mp3" : "pcm",
+        response_format: (request.format ?? this.format) === "mp3" ? "mp3" : "pcm",
       };
       if (request.speed !== undefined) body.speed = request.speed;
 
@@ -116,9 +127,7 @@ export class OpenRouterTTS implements TTS {
         yield buffer;
       }
     } finally {
-      if (this.abort === controller) {
-        this.abort = null;
-      }
+      this.streams.delete(controller);
     }
   }
 }

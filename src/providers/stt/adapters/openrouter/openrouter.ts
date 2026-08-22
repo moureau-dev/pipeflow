@@ -32,6 +32,35 @@ export interface OpenRouterSTTOptions extends STTOptions {
    * sent as-is.
    */
   audioFormat?: OpenRouterAudioFormat;
+  /**
+   * Strip common whisper hallucinations from transcripts: asterisk stage
+   * directions ("*Dramatic music*"), repeated filler phrases ("Thank you.
+   * Thank you."), and pure-filler clips whisper emits on near-silence
+   * ("Thank you.", "Bye.", …). Set `false` to pass transcripts through
+   * untouched. Default `true`.
+   */
+  filterHallucinations?: boolean;
+  /**
+   * Sampling temperature (0–1) for transcription. Lower is more
+   * deterministic; whisper's API default is already 0, so this is rarely the
+   * lever for hallucinations.
+   */
+  temperature?: number;
+  /**
+   * Provider-specific passthrough, serialized as the `provider` multipart
+   * field. OpenRouter ignores the top-level `prompt` field ("accepted but
+   * ignored"), so the only way to reach whisper's prompt — vocabulary /
+   * context steering — is per-provider:
+   *
+   * ```ts
+   * providerOptions: { options: { groq: { prompt: "Transcribe exactly what is said." } } }
+   * ```
+   *
+   * Only the options for the provider that actually serves the request are
+   * forwarded, so the key must match the serving provider (openai, groq,
+   * together, …).
+   */
+  providerOptions?: Record<string, unknown>;
   /** Injectable fetch, mainly for tests. */
   fetch?: FetchLike;
 }
@@ -98,6 +127,9 @@ export class OpenRouterSession implements STTSession {
   private readonly sampleRate: number;
   private readonly silenceMs: number;
   private readonly audioFormat: OpenRouterAudioFormat;
+  private readonly filterHallucinations: boolean;
+  private readonly temperature: number | undefined;
+  private readonly providerOptions: Record<string, unknown> | undefined;
   private readonly fetchImpl: FetchLike;
 
   private chunks: Uint8Array[] = [];
@@ -118,6 +150,9 @@ export class OpenRouterSession implements STTSession {
     this.sampleRate = options.sampleRate ?? 16_000;
     this.silenceMs = options.silenceMs ?? 800;
     this.audioFormat = options.audioFormat ?? "pcm";
+    this.filterHallucinations = options.filterHallucinations ?? true;
+    this.temperature = options.temperature;
+    this.providerOptions = options.providerOptions;
     this.fetchImpl = options.fetch ?? fetch;
   }
 
@@ -199,17 +234,20 @@ export class OpenRouterSession implements STTSession {
     const controller = new AbortController();
     this.controllers.add(controller);
     try {
-      const text = await transcribeClip({
+      const raw = await transcribeClip({
         apiKey: this.apiKey,
         baseUrl: this.baseUrl,
         model: this.model,
         language: this.language,
         sampleRate: this.sampleRate,
         audioFormat: this.audioFormat,
+        temperature: this.temperature,
+        providerOptions: this.providerOptions,
         audio,
         signal: controller.signal,
         fetchImpl: this.fetchImpl,
       });
+      const text = this.filterHallucinations ? cleanTranscript(raw) : raw;
       if (!this.aborted && text) this.emit("final", text);
     } catch (error) {
       if (!this.aborted) {
@@ -240,6 +278,8 @@ interface TranscribeClipOptions {
   language: string | undefined;
   sampleRate: number;
   audioFormat: OpenRouterAudioFormat;
+  temperature: number | undefined;
+  providerOptions: Record<string, unknown> | undefined;
   audio: Uint8Array;
   signal: AbortSignal;
   fetchImpl: FetchLike;
@@ -274,6 +314,14 @@ async function transcribeClip(options: TranscribeClipOptions): Promise<string> {
   }
   form.append("file", new Blob([bytes], { type }), name);
   if (options.language) form.append("language", options.language);
+  if (options.temperature !== undefined) {
+    form.append("temperature", String(options.temperature));
+  }
+  // The only way to reach whisper's `prompt` through OpenRouter (the
+  // top-level field is accepted but ignored) is per-provider passthrough.
+  if (options.providerOptions) {
+    form.append("provider", JSON.stringify(options.providerOptions));
+  }
 
   const response = await options.fetchImpl(`${options.baseUrl}/audio/transcriptions`, {
     method: "POST",
@@ -319,4 +367,63 @@ export function toWav(pcm: Uint8Array, sampleRate: number): Uint8Array {
   view.setUint32(40, dataSize, true);
   wav.set(pcm, 44);
   return wav;
+}
+
+/**
+ * Conversational fillers whisper loves to "hear" when a clip is mostly
+ * silence (a trailing gap, a cough, the speaker's own voice echoing back).
+ * Only a transcript that is *entirely* one of these is dropped, so a
+ * genuine "thank you" still passes through when it is part of a longer
+ * utterance.
+ */
+const FILLER_PHRASES = [
+  "thank you",
+  "thanks",
+  "thank you for watching",
+  "thanks for watching",
+  "please subscribe",
+  "bye bye",
+  "goodbye",
+  "bye",
+  "good night",
+  "i love you",
+  "love you",
+  "you're welcome",
+  "no problem",
+  "have a great day",
+  "see you later",
+  "see you",
+  "okay",
+  "ok",
+];
+
+/**
+ * Clean a whisper transcript of its most common hallucinations, returning
+ * "" when nothing worth speaking remains:
+ *
+ * 1. Asterisk stage directions ("*Dramatic music*", "*laughs*") are
+ *    dropped — whisper transcribes background noise as stage notes.
+ * 2. Consecutive repeated sentences ("Thank you. Thank you.") collapse to
+ *    one — a doubled filler is a classic near-silence artifact.
+ * 3. A transcript that is entirely one of the `FILLER_PHRASES` is dropped.
+ */
+export function cleanTranscript(text: string): string {
+  let out = text
+    .replace(/\*[^*]*\*/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (out.length === 0) return "";
+
+  const sentences = out.split(/(?<=[.!?])\s+/).filter((sentence) => sentence.length > 0);
+  const collapsed: string[] = [];
+  for (const sentence of sentences) {
+    const last = collapsed.at(-1);
+    if (last !== undefined && last.toLowerCase() === sentence.toLowerCase()) continue;
+    collapsed.push(sentence);
+  }
+  out = collapsed.join(" ").trim();
+  if (out.length === 0) return "";
+
+  const normalized = out.toLowerCase().replace(/[.!?]+$/g, "");
+  return FILLER_PHRASES.includes(normalized) ? "" : out;
 }

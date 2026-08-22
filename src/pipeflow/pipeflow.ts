@@ -11,6 +11,14 @@ export interface PipeflowOptions {
   stt?: STT;
   tts?: TTS;
   persistence?: Persistence;
+  /**
+   * Default for created conversations: auto-execute the agents' tools
+   * (default `true`), feeding each tool's result back into the model loop.
+   * Set `false` to resolve tool calls from your own backend via
+   * `resolveToolCall()`. Override per conversation in
+   * `pipeflow.conversations.create()`.
+   */
+  autoExecuteTools?: boolean;
 }
 
 /**
@@ -37,6 +45,7 @@ export class Pipeflow {
       persistence,
       stt: options.stt,
       tts: options.tts,
+      autoExecuteTools: options.autoExecuteTools,
     });
   }
 

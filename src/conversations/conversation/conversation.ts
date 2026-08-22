@@ -48,6 +48,12 @@ export interface ConversationOptions {
    */
   stt?: STT;
   tts?: TTS;
+  /**
+   * Execute the agents' tools automatically (default `true`), feeding each
+   * tool's result back into the model loop. Set `false` to resolve tool
+   * calls from your own backend via `resolveToolCall()`.
+   */
+  autoExecuteTools?: boolean;
 }
 
 export interface ConversationEvents {
@@ -111,6 +117,7 @@ export class Conversation {
   private readonly persistence: Persistence | undefined;
   private readonly stt: STT | undefined;
   private readonly tts: TTS | undefined;
+  private readonly autoExecuteTools: boolean;
   private readonly listeners = new Map<
     keyof ConversationEvents,
     Set<(payload: never) => void>
@@ -125,6 +132,7 @@ export class Conversation {
     this.persistence = options.persistence;
     this.stt = options.stt;
     this.tts = options.tts;
+    this.autoExecuteTools = options.autoExecuteTools ?? true;
     this.transcription = new Transcription(this.id);
     this.state = createConversationState();
   }
@@ -490,7 +498,12 @@ export class Conversation {
     // With agents the orchestrator coordinates the roster, routing each turn
     // to an agent by name/alias. Without agents it runs transcription-only.
     return this.agents.length > 0
-      ? new Orchestrator({ ...common, agents: [...this.agents], tts: this.tts })
+      ? new Orchestrator({
+          ...common,
+          agents: [...this.agents],
+          tts: this.tts,
+          autoExecuteTools: this.autoExecuteTools,
+        })
       : new Orchestrator(common);
   }
 

@@ -14,6 +14,33 @@ class FakeTTS implements TTS {
   stop(): void {}
 }
 
+/** A TTS whose `stop()` aborts in-flight synthesis, like the real adapters. */
+class AbortableTTS implements TTS {
+  readonly requests: TTSRequest[] = [];
+  private readonly controllers = new Set<AbortController>();
+
+  async *stream(request: TTSRequest): AsyncGenerator<Uint8Array> {
+    this.requests.push(request);
+    const controller = new AbortController();
+    this.controllers.add(controller);
+    try {
+      while (true) {
+        await Bun.sleep(5);
+        if (controller.signal.aborted) {
+          throw new DOMException("The operation was aborted.", "AbortError");
+        }
+        yield encode("chunk ");
+      }
+    } finally {
+      this.controllers.delete(controller);
+    }
+  }
+
+  stop(): void {
+    for (const controller of this.controllers) controller.abort();
+  }
+}
+
 const encode = (text: string) => new TextEncoder().encode(text);
 
 function makeConversation(): Conversation {
@@ -130,5 +157,37 @@ describe("SpeechPipeline", () => {
     await pipeline.waitForIdle();
     // Delivery remains strictly in order: sentence one, then sentence two.
     expect(audio).toEqual([0, 1, 2, 3]);
+  });
+
+  test("a speech-only stop does not emit a spurious error", async () => {
+    const tts = new AbortableTTS();
+    const conversation = makeConversation();
+    const errors: Error[] = [];
+    conversation.on("error", ({ error }) => errors.push(error));
+    // The generation stays current — this is the coordination-question case,
+    // where the question's playback is stopped but no interrupt fires.
+    const pipeline = new SpeechPipeline({ tts, conversation, isCurrent: () => true });
+
+    pipeline.feed("Any questions?", 0);
+    await Bun.sleep(20); // synthesis is streaming
+    pipeline.stop(); // speech epoch bumps; the stream aborts and rejects
+    await pipeline.waitForIdle();
+
+    expect(errors).toEqual([]);
+  });
+
+  test("a genuine TTS failure emits an error event", async () => {
+    const tts = new FakeTTS(() => {
+      throw new Error("provider down");
+    });
+    const conversation = makeConversation();
+    const errors: Error[] = [];
+    conversation.on("error", ({ error }) => errors.push(error));
+    const pipeline = new SpeechPipeline({ tts, conversation, isCurrent: () => true });
+
+    pipeline.feed("Hello!", 0);
+    await pipeline.waitForIdle();
+
+    expect(errors.map((e) => e.message)).toEqual(["provider down"]);
   });
 });

@@ -114,7 +114,10 @@ export class SpeechPipeline {
           });
         }
       } catch (error) {
-        if (!this.isCurrent(epoch)) return; // interrupted
+        // A stop (speech epoch bump) or an interrupt (generation epoch bump)
+        // aborts the stream — that's not a provider failure. Anything else
+        // reaches the application as an error.
+        if (!this.isCurrent(epoch) || this.speechEpoch !== speechEpoch) return;
         this.conversation.emit("error", {
           conversationId: this.conversation.id,
           error: error instanceof Error ? error : new Error(String(error)),

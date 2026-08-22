@@ -33,6 +33,11 @@ floorSlider.addEventListener("input", () => {
 });
 
 let agentLine = null; // the live agent message element being streamed into
+// User-side truncation: an utterance ends (clip sent), and if a *new*
+// utterance starts before that clip's turn comes back from STT, the turn was
+// a slice of continued speech — its line gets a "…".
+let utterancePending = false;
+let cutUtterance = false;
 
 function addLine(className, text) {
   const div = document.createElement("div");
@@ -43,14 +48,33 @@ function addLine(className, text) {
   return div;
 }
 
+/**
+ * Mark the in-flight agent line as cut short (barge-in / interrupt) and
+ * close it. No-op when the agent already finished (`done` cleared the line)
+ * or never started speaking.
+ */
+function truncateAgentLine() {
+  if (agentLine) {
+    agentLine.textContent += "…";
+    agentLine = null;
+  }
+}
+
 ws.onmessage = (event) => {
   if (typeof event.data === "string") {
     const msg = JSON.parse(event.data);
     if (msg.type === "turn") {
       // A new user turn finalizes the previous agent line and ends its audio.
+      // If the agent was still responding (no `done` yet), its line was cut
+      // short by the barge-in — mark it truncated.
+      truncateAgentLine();
       stopPlayback();
-      agentLine = null;
-      addLine("user", `You: ${msg.text}`);
+      // If the user kept talking after this clip, the turn is a slice of
+      // their continued speech — mark it truncated too.
+      const text = cutUtterance ? `${msg.text}…` : msg.text;
+      cutUtterance = false;
+      utterancePending = false;
+      addLine("user", `You: ${text}`);
     } else if (msg.type === "minClipRms") {
       // The server's current floor (on connect, so the slider starts in sync).
       floorSlider.value = String(msg.value);
@@ -67,7 +91,9 @@ ws.onmessage = (event) => {
     } else if (msg.type === "done") {
       agentLine = null;
     } else if (msg.type === "interrupt") {
-      // The server aborted the generation/synthesis (barge-in, stop).
+      // The server aborted the generation/synthesis (barge-in, stop). Cut the
+      // playback and, if a partial line is open, mark it truncated.
+      truncateAgentLine();
       stopPlayback();
     } else if (msg.type === "error") {
       addLine("error", `⚠ ${msg.message}`);
@@ -226,11 +252,16 @@ micBtn.addEventListener("click", async () => {
 
       if (!talking) {
         if (voiced) {
+          // The first buffer can be a transient (tap, pop) — don't react to
+          // it yet. Only a *sustained* streak proves the user is speaking.
           leadIn.push(input);
           if (leadIn.length > startCount - 1) leadIn.shift();
           if (++voicedStreak >= startCount) {
             talking = true;
             silentStreak = 0;
+            // A new utterance while the previous clip's turn is still
+            // pending means the previous one was cut short by more speech.
+            if (utterancePending) cutUtterance = true;
             // Confirmed speech — only now cut the agent and send.
             stopPlayback();
             for (const lead of leadIn) sendPcm(lead);
@@ -255,6 +286,8 @@ micBtn.addEventListener("click", async () => {
         talking = false;
         voicedStreak = 0;
         silentStreak = 0;
+        // The clip is complete; its turn comes back after transcription.
+        utterancePending = true;
       } else {
         sendPcm(input);
       }

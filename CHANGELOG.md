@@ -84,10 +84,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the mic hears the user, on a new turn, or on the server message.
 - **Mic taps no longer interrupt the agent** — the client previously cut
   playback on the *first* voiced buffer, so a tap or pop (a single 256ms
-  transient) stopped the agent mid-sentence. Barge-in is now gated on
-  sustained voiced audio: playback cuts after two consecutive voiced buffers
-  (~512ms — a tap can't sustain that), and audio is still only *sent* after
-  the full VAD confirmation streak.
+  transient) stopped the agent mid-sentence. Barge-in now fires only on
+  *confirmed* speech: playback cuts and audio is sent together once the full
+  VAD streak (3 consecutive voiced buffers) is reached, so a tap never
+  interrupts — at the cost of ~768ms of barge-in latency.
+- **Truncated replies are marked** — when an interrupt or a new user turn
+  cuts the agent mid-response, the client appends "…" to the partial line so
+  a cut-off answer is visually distinct from a completed one. The user's own
+  lines get the same treatment: when a new utterance starts before the
+  previous clip's turn comes back from STT, that turn was a slice of
+  continued speech and is marked "…" too.
 - **Example voice drift** — fish's free TTS variant varies the voice per
   request when `voice` is omitted; the example now pins `voice: "alloy"`.
 - **Example playback speed** — raw pcm has a provider-defined sample rate

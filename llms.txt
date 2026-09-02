@@ -1,0 +1,432 @@
+# Pipeflow — AI Reference Guide
+
+Pipeflow is an open-source TypeScript backend SDK for building voice agents, conversational applications, meeting transcribers, Discord bots, recruiters, assistants, and other realtime audio experiences. Published as `@moureau/pipeflow`.
+
+It handles the plumbing between audio, speech-to-text, LLMs, text-to-speech, conversations, tools, and persistence — while keeping your application in control.
+
+**Pipeflow is the pipe. You build what flows through it.**
+
+**Realtime by default** — audio, transcripts, and speech stream continuously, with built-in interruption and barge-in handling.
+**Provider-agnostic** — STT, LLM, and TTS are swappable adapters (Deepgram, DeepSeek, OpenRouter, Kokoro, OpenAI, Claude).
+**Your backend stays yours** — tools and the audio transport are owned by your application; Pipeflow never executes your code.
+
+---
+
+## Core Concepts
+
+Four independent concepts:
+
+* **Pipeflow** — the orchestrator that wires STT, LLM, and TTS together. Created with providers.
+* **Agent** — intelligence, context, and tools. Can run standalone (`agent.run()`) or participate in a conversation.
+* **Conversation** — a persistent realtime conversation with participants, turns, audio, and interruption handling.
+* **Tool** — application capabilities executed by your backend. `PipeflowTool` with Zod `schema.in` for model contract and `execute()` callback.
+* **Provider** — an implementation of STT, LLM, or TTS (Deepgram, DeepSeek, OpenRouter, OpenAI, Claude, Kokoro).
+
+An agent does not inherently own a conversation. A conversation does not require an agent. A provider should not leak into your application logic.
+
+---
+
+## Installation
+
+```bash
+bun add @moureau/pipeflow
+```
+
+Published on npm as `@moureau/pipeflow`.
+
+---
+
+## Basic Voice Agent
+
+```ts
+import { Pipeflow } from "@moureau/pipeflow";
+import { DeepSeekLLM, DeepgramSTT, KokoroTTS } from "@moureau/pipeflow/providers";
+
+const stt = new DeepgramSTT({ apiKey: process.env.DEEPGRAM_API_KEY });
+const tts = new KokoroTTS();
+const llm = new DeepSeekLLM({ apiKey: process.env.DEEPSEEK_API_KEY });
+
+const pipeflow = new Pipeflow({ llm, stt, tts });
+
+const jarvis = pipeflow.agent({
+  name: "Jarvis",
+  context: `
+    You are Jarvis, a helpful voice assistant.
+    Keep your responses concise and conversational.
+  `,
+});
+
+const conversation = await pipeflow.conversations.create({
+  agents: [jarvis],
+});
+
+await conversation.start();
+
+// Feed audio as it arrives:
+voice.onAudio((audio) => {
+  conversation.listen({ userId: "alice", audio });
+});
+
+// Listen for generated audio:
+conversation.on("audio", ({ audio }) => {
+  voice.play(audio);
+});
+```
+
+---
+
+## Imports
+
+```ts
+// Core
+import { Pipeflow, PipeflowTool } from "@moureau/pipeflow";
+
+// Providers
+import { DeepSeekLLM, OpenRouterLLM, OpenAILLM, ClaudeLLM } from "@moureau/pipeflow/providers";
+import { DeepgramSTT } from "@moureau/pipeflow/providers";
+import { KokoroTTS } from "@moureau/pipeflow/providers";
+
+// Persistence
+import { SQLitePersistence } from "@moureau/pipeflow/persistence";
+
+// Transport
+import { /* adapters */ } from "@moureau/pipeflow/transport";
+
+// Conversations (types, subpaths)
+import type { Conversation, ConversationEvent } from "@moureau/pipeflow/conversations";
+```
+
+---
+
+## Conversation Lifecycle
+
+```ts
+create()       // creates the persistent conversation
+start()        // moves the conversation into the started state (attaches orchestrator)
+participate()  // adds participants
+listen()       // sends audio (synchronous — feed audio packets)
+send()         // injects a finalized text turn (no STT)
+stop()         // finalizes the realtime session
+interrupt()    // stops TTS, cancels current generation (barge-in)
+```
+
+`listen()` is intentionally synchronous — it means "send this audio packet", not "wait for this utterance to finish":
+
+```ts
+conversation.listen({ userId, audio });
+```
+
+`send({ userId, text })` does the same for a finalized text turn, bypassing STT.
+
+### Participants
+
+```ts
+await conversation.participate([
+  { userId: "alice" },
+  { userId: "bob", aliases: ["robert", "rob"] },
+  { userId: "charlie", aliases: ["charles"] },
+]);
+```
+
+### Interruption
+
+`interrupt()` is a semantic guarantee: it stops the active generation and prevents any further generated audio from reaching the conversation (tested to stop audio within ~100ms). The next turn starts fresh.
+
+```ts
+conversation.interrupt();
+```
+
+The orchestrator also detects automatic barge-in when a participant starts speaking while the agent is responding.
+
+---
+
+## Conversation Events
+
+```ts
+conversation.on("audio-in", ({ userId, audio }) => {});
+conversation.on("text-in", ({ userId, text }) => {});
+conversation.on("partial-transcript", ({ userId, text }) => {});  // live STT partials (captions)
+conversation.on("turn", ({ userId, text }) => {});                // finalized participant turn
+conversation.on("transcript", ({ userId, text }) => {});          // transcript entry
+conversation.on("audio", ({ userId, audio }) => {});              // generated audio to play
+conversation.on("generation", ({ userId, text }) => {});          // agent generation
+conversation.on("tool-call", ({ call }) => {});                   // every tool round-trip
+conversation.on("tool-call-result", ({ callId, result }) => {});  // tool execution result
+conversation.on("interrupt", () => {});
+conversation.on("error", ({ error }) => {});
+conversation.on("start", ({}) => {});
+conversation.on("stop", ({}) => {});
+conversation.on("state", ({ state }) => {});
+```
+
+---
+
+## Agents
+
+An agent defines an AI persona and its capabilities.
+
+```ts
+const jarvis = pipeflow.agent({
+  name: "Jarvis",
+  context: `
+    You are Jarvis.
+    You are concise, helpful, and conversational.
+  `,
+  tools: [getWeather, searchCalendar],
+});
+```
+
+Agents can also be run independently of conversations:
+
+```ts
+const result = await jarvis.run({
+  prompt: "Explain how a neural network works.",
+});
+console.log(result.text);
+```
+
+### Multi-agent conversations
+
+A conversation can coordinate **multiple agents**. A turn that explicitly addresses an agent by name or alias goes straight to that agent; unaddressed turns go through the built-in `understand` coordination, which decides whether to delegate, ask the user, or answer directly.
+
+```ts
+const conversation = await pipeflow.conversations.create({
+  agents: [receptionist, specialist],
+});
+```
+
+### Collaborative orchestration
+
+`understand` is a hardcoded **coordination**: a reasoning unit that decides what should happen next. It can:
+- **delegate** to one or more agents (in parallel), each with a self-contained prompt;
+- **pass** the work to another coordination;
+- **ask the user** for missing details via a structured, batched `clarify` action (capped at 2 question rounds, then assumptions are stated);
+- **complete** with a direct answer.
+
+Agent delegation runs as sub-generations on their own LLM, context, and tools. Clarification resumes on the next turn — participant speech during a clarifiy wait is treated as the answer, not as barge-in.
+
+---
+
+## Tools
+
+```ts
+import { z } from "zod";
+
+const getWeather = new PipeflowTool({
+  name: "get_weather",
+  description: "Get the current weather for a city.",
+  schema: {
+    in: z.object({ city: z.string().describe("The city to look up.") }),
+  },
+  execute: async ({ city }) => {
+    return weatherService.getCurrent(city);
+  },
+});
+```
+
+`schema.in` is what the model sends; `schema.out` (optional, defaults to `in`) is what `execute` receives after validation.
+
+### Auto-execute (default)
+
+```ts
+const jarvis = pipeflow.agent({
+  name: "Jarvis",
+  context: "You are a helpful assistant.",
+  tools: [getWeather],
+});
+
+const conversation = await pipeflow.conversations.create({ agents: [jarvis] });
+// tool calls auto-execute — no handler needed
+```
+
+The `tool-call` and `tool-call-result` events still fire for observation. Thrown errors are returned to the model as `{ "error": ... }`. Unknown tool names report `Unknown tool "..."`. Concurrent tool calls run in parallel. Hung tools are bounded by `toolTimeoutMs` (default 30s).
+
+### Opt out: manual tool execution
+
+```ts
+const conversation = await pipeflow.conversations.create({
+  agents: [jarvis],
+  autoExecuteTools: false,
+});
+
+conversation.on("tool-call", async ({ call }) => {
+  const result = await myBackend.executeTool(call.name, call.arguments);
+  conversation.resolveToolCall({ id: call.id, result });
+});
+```
+
+---
+
+## Meeting Transcription
+
+A conversation does not require an agent — Pipeflow works as a realtime transcription primitive.
+
+```ts
+const conversation = await pipeflow.conversations.create();
+
+// Without an agent, start() attaches the orchestrator in transcription-only mode
+await conversation.start();
+
+await conversation.participate([
+  { userId: "alice" },
+  { userId: "bob", aliases: ["robert"] },
+]);
+
+// Feed audio:
+discordVoice.onAudio((userId, audio) => {
+  conversation.listen({ userId, audio });
+});
+
+await conversation.stop();
+
+// Retrieve transcript afterward:
+const transcript = await pipeflow.conversations.transcript(conversation.id);
+```
+
+---
+
+## Meeting Summaries
+
+```ts
+const notetaker = pipeflow.agent({
+  name: "Meeting Notetaker",
+  context: `
+    You are a meeting notetaker.
+    Produce concise notes containing:
+    - summary
+    - decisions
+    - action items
+    - unresolved questions
+  `,
+});
+
+const transcript = await pipeflow.conversations.transcript(conversation.id);
+
+const result = await notetaker.run({
+  prompt: `
+    The meeting transcription is:
+    ${transcript.join("\n")}
+    Produce the meeting notes.
+  `,
+});
+```
+
+Or the notetaker can retrieve the transcript itself through a tool:
+
+```ts
+const getTranscript = new PipeflowTool({
+  name: "get_transcript",
+  description: "Retrieve the meeting transcript.",
+  execute: async () => {
+    return pipeflow.conversations.transcript(conversation.id);
+  },
+});
+```
+
+---
+
+## Providers
+
+| Interface | Provider | Package |
+|-----------|----------|---------|
+| LLM | DeepSeek | `@moureau/pipeflow/providers` |
+| LLM | OpenRouter | `@moureau/pipeflow/providers` |
+| LLM | OpenAI | `@moureau/pipeflow/providers` |
+| LLM | Claude (Anthropic) | `@moureau/pipeflow/providers` |
+| STT | Deepgram | `@moureau/pipeflow/providers` |
+| TTS | Kokoro | `@moureau/pipeflow/providers` |
+
+Providers are configured with their own credentials — Pipeflow itself does not hold an API key.
+
+---
+
+## Persistence
+
+```ts
+import { SQLitePersistence } from "@moureau/pipeflow/persistence";
+
+const pipeflow = new Pipeflow({
+  persistence: new SQLitePersistence({ filename: "./pipeflow.db" }),
+});
+```
+
+In-memory is the default (no persistence adapter needed). Separate persistence from the conversation domain.
+
+---
+
+## Architecture
+
+```
+src/
+├── agents/         — Agent and tool abstractions
+├── conversations/
+│   ├── conversation/    — Public realtime conversation API and lifecycle
+│   ├── orchestration/   — State machine: speech, transcription, turns, floor, generation, interruptions, tools, TTS
+│   └── transcription/   — Conversation transcription and transcript state
+├── persistence/    — Storage abstractions with adapters (in-memory, SQLite)
+├── providers/      — Vendor-independent interfaces and adapters (STT, LLM, TTS)
+└── transport/      — Realtime communication (in-memory, designed for WebSocket/WebRTC)
+```
+
+### Realtime pipeline
+
+```
+Audio input → Speech detection → STT stream → partial transcript → Conversation state
+→ turn completed → LLM stream → token stream → TTS stream → audio chunks → Application
+```
+
+Everything happens as a stream — Pipeflow does not wait for a complete recording before beginning transcription, nor for a complete LLM response before beginning TTS.
+
+---
+
+## Exports
+
+| Import path | Description |
+|---|---|
+| `@moureau/pipeflow` | Core: `Pipeflow`, `PipeflowTool`, `Agent` |
+| `@moureau/pipeflow/providers` | All provider adapters |
+| `@moureau/pipeflow/persistence` | Persistence adapters (`SQLitePersistence`) |
+| `@moureau/pipeflow/transport` | Transport adapters |
+| `@moureau/pipeflow/conversations` | Conversation types and utilities |
+
+---
+
+## Design Principles
+
+- **Realtime first:** Audio is streamed continuously, not processed as completed recordings.
+- **Provider agnostic:** STT, LLM, and TTS providers are adapters, not application-level concepts.
+- **Application-owned tools:** Your application executes your tools — Pipeflow only invokes callbacks.
+- **Conversations are persistent entities:** A `Conversation` is a runtime handle to a persistent conversation.
+- **Agents are independent:** An agent can participate in a conversation or simply be invoked with `run()`.
+- **Explicit boundaries:** Pipeflow owns orchestration. Your application owns logic. Providers own their services.
+- **Small public API:** `Pipeflow`, `Agent`, `Conversation`, `Tool` — everything else is replaceable implementation detail.
+
+---
+
+## Development
+
+```bash
+git clone git@github.com:moureau-dev/pipeflow.git
+cd pipeflow
+bun install
+bun test              # unit tests
+bun run test:e2e      # end-to-end (requires API key in .env)
+bun run build         # transpile to dist/esm + dist/cjs + dist/types
+bun run typecheck
+```
+
+Default to Bun (not Node): `bun <file>`, `bun test`, `bun run build`, `bunx tsc`.
+
+---
+
+## Common Mistakes
+
+| Wrong | Right |
+|---|---|
+| Awaiting before calling `conversation.listen()` in a hot audio stream | `listen()` is synchronous — call it each time a buffer arrives |
+| Creating a new `Pipeflow` per conversation | One `Pipeflow` instance, many `conversations.create()` calls |
+| Expecting `conversation.on("transcript")` to have full text before turn ends | Transcripts are streamed — `turn` event has the finalized text |
+| Adding tools via `conversation.on("tool-call")` when auto-execute is on | Tools auto-execute by default — `tool-call` events are for observation |
+| Assuming `stop()` also retrieves the transcript | `stop()` and `transcript()` are separate — retrieve after stop |
+| Using a provider key without configuring it on the provider instance | Each provider takes its own credentials; Pipeflow does not hold keys |
+| Waiting for `start()` to finish before adding participants | `participate()` works before and after `start()` |

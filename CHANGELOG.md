@@ -85,9 +85,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Mic taps no longer interrupt the agent** — the client previously cut
   playback on the *first* voiced buffer, so a tap or pop (a single 256ms
   transient) stopped the agent mid-sentence. Barge-in now fires only on
-  *confirmed* speech: playback cuts and audio is sent together once the full
-  VAD streak (3 consecutive voiced buffers) is reached, so a tap never
-  interrupts — at the cost of ~768ms of barge-in latency.
+  *confirmed* speech — a short burst of voiced ~32ms frames — so a tap never
+  interrupts, and the gate now reacts in ~200ms instead of the ~770ms the old
+  three-buffer streak cost.
+- **Example mic VAD stops eating and duplicating audio** — the buffer-level
+  VAD dropped the first voiced 256ms buffer (clipped word onsets — the eaten
+  first letter) and then sent the confirming buffer a second time (whisper
+  heard one 256ms window twice and echoed words back). Clips also began
+  abruptly at speech, with no lead-in silence, and ended after a single
+  silent block — the exact input whisper loop-hallucinates on ("to the back,
+  to the back…", repeated words). The client now decides on ~32ms frames,
+  holds an idle pre-roll so every clip starts with real lead-in silence
+  before the first voiced frame, requires a genuine speech burst so short
+  words ("sim") register, and appends ~450ms of trailing silence so the last
+  word isn't cut off.
 - **Truncated replies are marked** — when an interrupt or a new user turn
   cuts the agent mid-response, the client appends "…" to the partial line so
   a cut-off answer is visually distinct from a completed one. The user's own

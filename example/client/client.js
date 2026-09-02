@@ -227,70 +227,146 @@ micBtn.addEventListener("click", async () => {
     source.connect(processor);
     processor.connect(audioCtx.destination); // keep the processor alive
 
-    // VAD with hysteresis: an utterance needs a short streak of voiced
-    // buffers to start (so pops, chewing, and mic taps don't become turns)
-    // and two consecutive silent buffers to end. The lead-in is sent so the
-    // start of the first word isn't clipped. The clip ends as cleanly as
-    // possible — one silent tail buffer, nothing more — and the server's STT
-    // segments utterances on the silence gap.
+    // VAD with a frame-level state machine (~32ms frames). The previous
+    // per-buffer logic decided on whole 256ms blocks, which is what produced
+    // the artifacts:
+    //   - it needed 3 *consecutive voiced blocks* (~770ms) to start, so short
+    //     words ("sim") never opened a clip and the user had to repeat them;
+    //   - it dropped the first voiced block, so words whose onset landed there
+    //     lost their first letter/syllable;
+    //   - it sent the confirming block twice, so whisper heard duplicated
+    //     audio and echoed words back;
+    //   - clips started abruptly at speech (no lead-in silence) and ended
+    //     after one silent block, which is exactly when whisper loop-
+    //     hallucinates ("to the back, to the back…") and pads word repeats.
     //
-    // Barge-in fires only on *confirmed* speech: playback cuts and audio is
-    // sent together, once the voiced streak reaches `startCount`. A tap or
-    // pop is a single-buffer transient and never reaches the streak, so it
+    // Now idle frames accumulate in a bounded pre-roll. When a real speech
+    // burst is confirmed the clip is sent *from the pre-roll*, so whisper
+    // always gets ~160ms of leading silence before the first voiced frame and
+    // nothing at the onset is dropped. The utterance runs until ~450ms of
+    // trailing silence, which is sent as the clip's tail so the last word
+    // isn't cut off. Barge-in still fires only on *confirmed* speech: a tap
+    // or pop is a frame or two and never reaches the burst threshold, so it
     // can't interrupt the agent.
-    const threshold = 0.03;
-    const startCount = 3; // voiced 256ms buffers needed to confirm an utterance
+    const FRAME_MS = 32;
+    const frameLen = Math.round((audioCtx.sampleRate / 1000) * FRAME_MS);
+    const VOICE_RMS = 0.02; // a frame at/above this counts as voiced
+    const STRONG_RMS = 0.07; // loud enough to be unmistakably speech
+    const CONFIRM_VOICED = 4; // voiced frames within the window below…
+    const CONFIRM_WINDOW = 6; // …~192ms of recent frames confirm an utterance
+    const TAIL_SILENCE_FRAMES = 14; // ~450ms silent run ends the utterance
+    const LEAD_SILENCE_FRAMES = 5; // ~160ms of pre-roll before the burst
+    const PRE_MAX_FRAMES = 40; // idle pre-roll cap (~1.3s)
+    const BURST_GAP_FRAMES = 2; // silent frames tolerated inside a burst
+
     let talking = false;
-    let voicedStreak = 0;
-    let silentStreak = 0;
-    let leadIn = [];
+    let silentRun = 0; // consecutive silent frames while talking
+    let pre = []; // idle pre-roll frames { data, voiced, strong }, newest last
+    let leftover = new Float32Array(0); // samples carried between processor blocks
+
     processor.onaudioprocess = (event) => {
       const input = event.inputBuffer.getChannelData(0);
-      let sum = 0;
-      for (let i = 0; i < input.length; i++) sum += input[i] * input[i];
-      const voiced = Math.sqrt(sum / input.length) >= threshold;
 
-      if (!talking) {
-        if (voiced) {
-          // The first buffer can be a transient (tap, pop) — don't react to
-          // it yet. Only a *sustained* streak proves the user is speaking.
-          leadIn.push(input);
-          if (leadIn.length > startCount - 1) leadIn.shift();
-          if (++voicedStreak >= startCount) {
-            talking = true;
-            silentStreak = 0;
-            // A new utterance while the previous clip's turn is still
-            // pending means the previous one was cut short by more speech.
-            if (utterancePending) cutUtterance = true;
-            // Confirmed speech — only now cut the agent and send.
-            stopPlayback();
-            for (const lead of leadIn) sendPcm(lead);
-            leadIn = [];
+      // The block boundary rarely lines up with the frame grid; stitch any
+      // remainder from the previous block onto the front of this one so no
+      // samples are lost between frames.
+      const samples = new Float32Array(leftover.length + input.length);
+      samples.set(leftover);
+      samples.set(input, leftover.length);
+
+      const out = []; // Float32Array frames to send once this block is processed
+      let offset = 0;
+      while (offset + frameLen <= samples.length) {
+        const data = samples.slice(offset, offset + frameLen);
+        offset += frameLen;
+
+        let sum = 0;
+        for (let i = 0; i < data.length; i++) sum += data[i] * data[i];
+        const level = Math.sqrt(sum / data.length);
+        const voiced = level >= VOICE_RMS;
+        const strong = level >= STRONG_RMS;
+
+        if (!talking) {
+          // Idle: hold recent frames so the clip can start *before* the burst.
+          pre.push({ data, voiced, strong });
+          if (pre.length > PRE_MAX_FRAMES) pre.splice(0, pre.length - PRE_MAX_FRAMES);
+
+          // Confirm on a speech burst: CONFIRM_VOICED voiced frames within the
+          // last CONFIRM_WINDOW (~192ms) — a short word qualifies — or a loud
+          // burst (2 strong frames with real voiced content). A tap/pop is one
+          // or two frames and never reaches either.
+          const window = pre.slice(-CONFIRM_WINDOW);
+          let voicedCount = 0;
+          let strongCount = 0;
+          for (const frame of window) {
+            if (frame.voiced) voicedCount++;
+            if (frame.strong) strongCount++;
           }
-        } else {
-          voicedStreak = 0;
+          const burst =
+            window.length >= CONFIRM_VOICED &&
+            (voicedCount >= CONFIRM_VOICED || (strongCount >= 2 && voicedCount >= 3));
+
+          if (burst) {
+            // A new utterance while the previous clip's turn is still pending
+            // means the previous one was cut short by more speech.
+            if (utterancePending) cutUtterance = true;
+            // Confirmed speech — only now cut the agent.
+            stopPlayback();
+            talking = true;
+            silentRun = 0;
+
+            // Walk back to where the burst began (tolerating a short dip) and
+            // send from LEAD_SILENCE_FRAMES before it, so whisper hears real
+            // lead-in silence instead of an abrupt mid-word start.
+            let i = pre.length - 1;
+            let gap = 0;
+            while (i >= 0) {
+              if (pre[i].voiced || pre[i].strong) gap = 0;
+              else gap++;
+              if (gap > BURST_GAP_FRAMES) break;
+              i--;
+            }
+            let start = Math.max(0, i + 1 - LEAD_SILENCE_FRAMES);
+            for (; start < pre.length; start++) out.push(pre[start].data);
+            pre = [];
+          }
+          continue;
         }
-        if (!talking) return;
+
+        // Talking: send speech immediately. Silent frames are still sent as a
+        // tail so the ends of words aren't clipped; once the silent run passes
+        // TAIL_SILENCE_FRAMES the utterance is complete.
+        if (voiced) {
+          silentRun = 0;
+          out.push(data);
+        } else if (silentRun < TAIL_SILENCE_FRAMES) {
+          out.push(data);
+          silentRun++;
+        } else {
+          talking = false;
+          silentRun = 0;
+          pre = [];
+          // The clip is complete; its turn comes back after transcription.
+          utterancePending = true;
+        }
       }
 
-      // Talking: send voiced buffers immediately. A single silent buffer is
-      // sent as a tail so the ends of words aren't clipped; the utterance then
-      // ends on the next silent buffer. Trailing silence in the clip is what
-      // whisper "fills in" with hallucinated words ("Thank you.", …), so the
-      // clip is cut as cleanly as possible — the server's STT segments on the
-      // silence gap itself.
-      if (voiced) {
-        silentStreak = 0;
-        sendPcm(input);
-      } else if (++silentStreak >= 2) {
-        talking = false;
-        voicedStreak = 0;
-        silentStreak = 0;
-        // The clip is complete; its turn comes back after transcription.
-        utterancePending = true;
-      } else {
-        sendPcm(input);
+      leftover = samples.slice(offset);
+      if (out.length === 0) return;
+
+      // Convert the block's frames to one linear16 PCM message (the server's
+      // STT buffers until silence, so message boundaries don't matter).
+      let total = 0;
+      for (const frame of out) total += frame.length;
+      const pcm = new Int16Array(total);
+      let p = 0;
+      for (const frame of out) {
+        for (let i = 0; i < frame.length; i++) {
+          const s = Math.max(-1, Math.min(1, frame[i]));
+          pcm[p++] = s < 0 ? s * 0x8000 : s * 0x7fff;
+        }
       }
+      if (ws.readyState === WebSocket.OPEN) ws.send(pcm.buffer);
     };
     micActive = true;
     micBtn.textContent = "🎤 Stop mic";
@@ -299,15 +375,6 @@ micBtn.addEventListener("click", async () => {
     addLine("error", `⚠ Mic failed: ${error.message}`);
   }
 });
-
-function sendPcm(float) {
-  const pcm = new Int16Array(float.length);
-  for (let i = 0; i < float.length; i++) {
-    const s = Math.max(-1, Math.min(1, float[i]));
-    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-  }
-  if (ws.readyState === WebSocket.OPEN) ws.send(pcm.buffer);
-}
 
 // ---------------------------------------------------------------------------
 // Text input

@@ -50,7 +50,11 @@ if (!apiKey) {
 const USER_ID = "user";
 const stt = new OpenRouterSTT({
     apiKey,
-    silenceMs: 700,
+    // The client streams through mid-utterance pauses and appends a ~450ms
+    // silence tail, so this only has to wait out the gap after the client
+    // *stops* — it no longer needs to swallow a user's thinking pause. Short =
+    // snappier turns.
+    silenceMs: 400,
     // Unset = whisper auto-detects the language. Pin it with an ISO-639-1
     // code when detection drifts: `STT_LANGUAGE=pt bun run example/server.ts`.
     language: process.env.STT_LANGUAGE,

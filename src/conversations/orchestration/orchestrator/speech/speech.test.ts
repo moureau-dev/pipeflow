@@ -159,6 +159,73 @@ describe("SpeechPipeline", () => {
     expect(audio).toEqual([0, 1, 2, 3]);
   });
 
+  test("bounds concurrent synthesis to a queue instead of firing every sentence at once", async () => {
+    const tts = new FakeTTS((text) => [encode(text)]);
+    const conversation = makeConversation();
+    const audio: number[] = [];
+    conversation.on("audio", (payload) => audio.push(payload.audio.sequence));
+    const pipeline = new SpeechPipeline({ tts, conversation, isCurrent: () => true });
+
+    // A whole reply arrives in one burst: the chunker splits it into four
+    // sentences, but only the first two start synthesizing immediately.
+    pipeline.feed("One. Two. Three. Four!", 0);
+    expect(tts.requests.map((r) => r.text)).toEqual(["One.", "Two."]);
+
+    // The rest wait for a slot, then synthesize and deliver in order.
+    await pipeline.waitForIdle();
+    expect(tts.requests.map((r) => r.text)).toEqual([
+      "One.",
+      "Two.",
+      "Three.",
+      "Four!",
+    ]);
+    expect(audio).toEqual([0, 1, 2, 3]);
+  });
+
+  test("maxConcurrentRequests: 1 serializes synthesis without dropping order", async () => {
+    const tts = new FakeTTS((text) => [encode(text)]);
+    const conversation = makeConversation();
+    const audio: number[] = [];
+    conversation.on("audio", (payload) => audio.push(payload.audio.sequence));
+    const pipeline = new SpeechPipeline({
+      tts,
+      conversation,
+      isCurrent: () => true,
+      maxConcurrentRequests: 1,
+    });
+
+    pipeline.feed("First. Second. Third!", 0);
+    // With one slot, only the first sentence starts immediately.
+    expect(tts.requests.map((r) => r.text)).toEqual(["First."]);
+
+    await pipeline.waitForIdle();
+    expect(tts.requests.map((r) => r.text)).toEqual(["First.", "Second.", "Third!"]);
+    expect(audio).toEqual([0, 1, 2]);
+  });
+
+  test("waitForIdle covers sentences still waiting for a synthesis slot", async () => {
+    // A TTS that stalls mid-synthesis so later sentences pile up in the queue.
+    const tts = new class implements TTS {
+      readonly requests: TTSRequest[] = [];
+      async *stream(request: TTSRequest): AsyncGenerator<Uint8Array> {
+        this.requests.push(request);
+        await Bun.sleep(10); // slow synthesis: the LLM outruns the slots
+        yield encode(request.text);
+      }
+      stop(): void {}
+    }();
+    const conversation = makeConversation();
+    const audio: number[] = [];
+    conversation.on("audio", (payload) => audio.push(payload.audio.sequence));
+    const pipeline = new SpeechPipeline({ tts, conversation, isCurrent: () => true });
+
+    pipeline.feed("One. Two. Three!", 0);
+    // waitForIdle must not return while the third sentence is still queued.
+    await pipeline.waitForIdle();
+    expect(tts.requests.map((r) => r.text)).toEqual(["One.", "Two.", "Three!"]);
+    expect(audio).toEqual([0, 1, 2]);
+  });
+
   test("a speech-only stop does not emit a spurious error", async () => {
     const tts = new AbortableTTS();
     const conversation = makeConversation();

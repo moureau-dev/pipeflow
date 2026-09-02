@@ -63,6 +63,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **TTS synthesis is bounded to a small queue** — the speech pipeline fired
+  one synthesis request per sentence the moment it was flushed, so a reply
+  with many sentences launched an unbounded burst of concurrent provider
+  requests (free TTS variants rate-limit those, and later sentences were
+  frequently cut off or errored). Sentences now synthesize through a bounded
+  window (2 in-flight requests by default; `SpeechPipeline` accepts
+  `maxConcurrentRequests`), started as soon as a slot is free so the next
+  sentence overlaps the current one's playback and the first piece is never
+  held up by the last. `waitForIdle()` now also covers sentences still waiting
+  on a slot.
+
 - **Clip boundaries freeze at silence detection** — the OpenRouter STT
   adapter previously took its buffer when the serialized transcription
   callback ran, not when the silence that ended the clip was detected. If a

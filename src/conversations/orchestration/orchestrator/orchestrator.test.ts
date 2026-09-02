@@ -167,9 +167,9 @@ describe("Orchestrator", () => {
     ]);
 
     // LLM saw the system context and the user turn with its automatic
-    // context suffix (time + speaker).
+    // context suffix (time + speaker). Single-agent: no per-agent `name`.
     expect(harness.llm.requests[0]!.messages).toEqual([
-      { role: "system", name: "Jarvis", content: "Be concise." },
+      { role: "system", content: "Be concise." },
       {
         role: "user",
         content: expect.stringMatching(
@@ -554,15 +554,16 @@ describe("Orchestrator", () => {
 
     // The second request carries the whole exchange so the follow-up
     // answer can reference it; each turn carries its own context suffix.
+    // Single-agent: assistant/system `name` fields are omitted.
     expect(harness.llm.requests[1]!.messages).toEqual([
-      { role: "system", name: "Jarvis", content: "Be concise." },
+      { role: "system", content: "Be concise." },
       {
         role: "user",
         content: expect.stringMatching(
           /^al: What is the weather\?\n\nAdditional context: Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\. The current user is al with user id alice \(aliases: al\)\.$/,
         ),
       },
-      { role: "assistant", name: "Jarvis", content: "Which city?" },
+      { role: "assistant", content: "Which city?" },
       {
         role: "user",
         content: expect.stringMatching(
@@ -745,7 +746,7 @@ describe("Orchestrator", () => {
     await orchestrator.whenIdle();
 
     expect(llm.requests[0]!.messages).toEqual([
-      { role: "system", name: "Jarvis", content: "Be concise." },
+      { role: "system", content: "Be concise." },
       {
         role: "user",
         content: expect.stringMatching(

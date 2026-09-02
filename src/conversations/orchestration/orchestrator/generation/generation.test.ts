@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { GenerationRunner } from "./generation";
-import type { LLM, LLMEvent, LLMMessage } from "../../../../providers/llm/types";
+import type { LLM, LLMEvent, LLMMessage, LLMRequest } from "../../../../providers/llm/types";
 import type { ResolvedToolCall } from "../tools/tools";
 
 type Script = () => AsyncGenerator<LLMEvent, void, unknown>;
@@ -20,6 +20,7 @@ interface RequestOverrides {
   messages?: LLMMessage[];
   maxToolIterations?: number;
   isCurrent?: () => boolean;
+  agentNames?: boolean;
   onDelta?: (delta: string, textBefore: string) => void;
   resolveToolCalls?: (
     calls: { id: string; name: string; arguments: string }[],
@@ -34,6 +35,7 @@ function makeRequest(overrides: RequestOverrides = {}) {
     tools: [],
     maxToolIterations: overrides.maxToolIterations ?? 3,
     isCurrent: overrides.isCurrent ?? (() => true),
+    ...(overrides.agentNames !== undefined ? { agentNames: overrides.agentNames } : {}),
     onDelta: overrides.onDelta,
     resolveToolCalls:
       overrides.resolveToolCalls ??
@@ -134,6 +136,39 @@ describe("GenerationRunner", () => {
     expect(outcome.status).toBe("error");
     expect(outcome.text).toBe("Hello");
     expect((outcome.error as Error).message).toBe("boom");
+  });
+
+  test("agentNames: false strips redundant per-agent names before streaming", async () => {
+    const seen: LLMMessage[][] = [];
+    const llm: LLM = {
+      async *stream(request: LLMRequest): AsyncGenerator<LLMEvent> {
+        seen.push(request.messages);
+        yield { type: "done" };
+      },
+      stop() {},
+    };
+    const original: LLMMessage[] = [
+      { role: "system", name: "Scout", content: "Be concise." },
+      { role: "user", content: "hi" },
+      { role: "assistant", name: "Scout", content: "earlier reply" },
+      { role: "tool", toolCallId: "t1", name: "get_weather", content: '"sunny"' },
+    ];
+    const outcome = await runner.run(
+      makeRequest({ llm, messages: original, agentNames: false }),
+    );
+    expect(outcome.status).toBe("done");
+
+    // System and assistant names are dropped (with one agent they are
+    // redundant and some providers render them as role headers the model
+    // imitates); tool messages keep their required `name`, and the caller's
+    // array is never mutated.
+    expect(seen[0]).toEqual([
+      { role: "system", content: "Be concise." },
+      { role: "user", content: "hi" },
+      { role: "assistant", content: "earlier reply" },
+      { role: "tool", toolCallId: "t1", name: "get_weather", content: '"sunny"' },
+    ]);
+    expect(original[0]).toEqual({ role: "system", name: "Scout", content: "Be concise." });
   });
 
   test("is bounded by maxToolIterations", async () => {

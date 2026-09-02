@@ -46,7 +46,12 @@ latency-vs-tokens curves are measurable.
 Deltas may carry an optional `reasoning` field when the provider streams
 thinking tokens separately from content (OpenRouter `reasoning`, DeepSeek
 `reasoning_content`) — `bun scripts/latency-profile.ts` probes whether a
-model thinks before it speaks, through the same adapter path.
+model thinks before it speaks, through the same adapter path. Reasoning
+models whose serving layer has no native thinking channel (e.g. nova via
+OpenRouter) instead stream their chain of thought as inline
+`<thinking>…</thinking>` tags in the content; the adapters strip the tags out
+of content and surface the inner text on the same `reasoning` field, so
+thoughts are never spoken or written into the reply.
 
 ### Tool-call encodings (`toolMode`)
 
@@ -70,6 +75,9 @@ differs.
 - `prompted` — the same envelope requested by an instruction appended to the
   last user message. The universal fallback: works on any chat model, at the
   cost of extraction/repair/retry, higher token use, and tail-latency risk.
+  The instruction permits plain conversational text when no tool is needed, so
+  a model that ignores the envelope is answered directly instead of failing
+  the generation.
 
 In `envelope`/`prompted` modes the adapter injects a system-level tool
 contract (tool names, descriptions, and the envelope output rule — without
@@ -77,7 +85,10 @@ it the model never sees the tool descriptions, which invites prose or native
 tool-call syntax) and embeds each tool's argument schema in the envelope, so
 the model sees the same argument contract it would in native mode. Replies
 that wrap the JSON in fences or lose the opening brace in transport are
-repaired before parsing.
+repaired before parsing. Only in `prompted` mode (no endpoint guarantee) a
+reply that isn't JSON at all — plain prose — is treated as the model's answer
+and streamed as text; output that looks like a broken JSON attempt still
+surfaces an error.
 
 The right mode is a property of the model's endpoints, not the caller.
 `ToolModeBenchmark` (from `@moureau/pipeflow/providers/llm`) measures it:

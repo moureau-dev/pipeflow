@@ -887,16 +887,16 @@ describe("coordination", () => {
     await orchestrator.whenIdle();
 
     // The sub-generation's text is not in history — the coordinator's own
-    // summary stands in for it.
+    // summary stands in for it. Single-agent: no per-agent `name` fields.
     expect(llm.requests[0]!.messages).toEqual([
-      { role: "system", name: "Jarvis", content: "Be concise." },
+      { role: "system", content: "Be concise." },
       {
         role: "user",
         content: expect.stringMatching(
           /^alice: Hello from before\.\n\nAdditional context: Now it is \d{1,2} [a-z]{3} \d{4}, \d{2}:\d{2}\. The current user is alice with user id alice\.$/,
         ),
       },
-      { role: "assistant", name: "Jarvis", content: "Summary answer." },
+      { role: "assistant", content: "Summary answer." },
       {
         role: "user",
         content: expect.stringMatching(

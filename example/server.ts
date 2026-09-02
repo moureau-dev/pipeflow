@@ -79,8 +79,8 @@ const tts = new OpenRouterTTS({
 });
 const llm = new OpenRouterLLM({
     apiKey,
-    model: "meta-llama/llama-4-scout",
-    toolMode: "native",
+    model: 'amazon/nova-micro-v1',
+    toolMode: 'native',
 });
 
 const pipeflow = new Pipeflow({

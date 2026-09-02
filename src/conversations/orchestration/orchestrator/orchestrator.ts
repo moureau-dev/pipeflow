@@ -449,6 +449,11 @@ export class Orchestrator {
       maxTokens: this.maxTokens,
       maxToolIterations: this.maxToolIterations,
       isCurrent: () => this.epoch === epoch,
+      // With one agent every assistant turn is the same speaker, so the
+      // per-agent `name` fields are redundant — and some providers render
+      // them as role headers ("Scout:") that weaker models imitate by
+      // prefixing every reply with the agent's name.
+      agentNames: this.agents.length > 1,
       onDelta: (delta) => this.speech.feed(delta, epoch),
       resolveToolCalls: (calls) => this.tools.resolveCalls(calls),
     });

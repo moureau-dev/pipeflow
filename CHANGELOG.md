@@ -63,6 +63,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Inline `<thinking>` tags no longer leak into the reply** — reasoning
+  models whose serving layer lacks a native reasoning channel (e.g.
+  `amazon/nova-micro` via OpenRouter in a thinking mode) stream their chain
+  of thought as visible `<thinking>…</thinking>` tags inside the content, so
+  the "thoughts" were displayed and read aloud by TTS. The OpenAI-compatible
+  adapter now partitions the tags out of the content stream (handling tags
+  split across chunks) and surfaces the inner text on the existing
+  `reasoning` field — measured/displayable, but never spoken or written into
+  the reply text, transcript, or history.
+
+- **Single-agent conversations stop leaking the agent's name into prompts** —
+  system and assistant messages carried a per-agent `name` field even when the
+  conversation had one agent, where it is redundant. Some providers render
+  that `name` as a role header ("Scout:"), and smaller models imitate it —
+  every reply then starts by speaking the agent's name. Multi-agent
+  conversations (where names disambiguate who said what) keep them.
+
+- **Prompted tool mode answers plain prose instead of failing** — models that
+  ignore the envelope instruction and reply conversationally (common on
+  smaller chat models like `amazon/nova-micro`) previously errored the whole
+  generation with "model did not return a JSON envelope". The reply is now
+  treated as the model's answer and spoken normally; the prompt also tells the
+  model plain text is fine when no tool is needed. Output that clearly
+  attempted a (broken/truncated) envelope still errors.
+
 - **TTS synthesis is bounded to a small queue** — the speech pipeline fired
   one synthesis request per sentence the moment it was flushed, so a reply
   with many sentences launched an unbounded burst of concurrent provider

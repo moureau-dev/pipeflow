@@ -113,9 +113,24 @@ function buildEnvelopeSchema(tools: LLMToolDefinition[]): Record<string, unknown
 /** Instruction appended to the last user message in `prompted` mode. */
 function promptedEnvelopeInstruction(tools: LLMToolDefinition[]): string {
   return (
-    "Respond with ONLY valid JSON matching this schema, with no prose and no markdown fences:\n" +
+    "When the user's request requires a tool, respond with ONLY valid JSON matching this " +
+    "schema, with no prose and no markdown fences:\n" +
     JSON.stringify(buildEnvelopeSchema(tools)) +
-    '\nThe JSON must be either {"answer": "..."} or {"calls": [{"name": "...", "arguments": {...}}]}.'
+    '\nThe JSON must be either {"answer": "..."} or {"calls": [{"name": "...", "arguments": {...}}]}. ' +
+    "When no tool is needed, respond in plain conversational text with no JSON."
+  );
+}
+
+/**
+ * True when the model's output looks like a (possibly broken) JSON envelope
+ * attempt rather than plain prose — used to decide whether a parse failure is
+ * a garbled tool call (error) or an envelope-ignoring model that simply
+ * answered (speak the text).
+ */
+function looksLikeJsonAttempt(content: string): boolean {
+  const trimmed = content.trim();
+  return (
+    trimmed.startsWith("{") || trimmed.startsWith("[") || /^```(?:json)?/i.test(trimmed)
   );
 }
 
@@ -138,6 +153,83 @@ function extractEnvelope(raw: string): string | null {
 }
 
 /**
+ * Stream-partition inline `<thinking>…</thinking>` spans out of model content.
+ * Reasoning-style models (DeepSeek-R1 and distills, Qwen3, …) emit their
+ * chain of thought between visible tags whenever the serving layer has no
+ * native reasoning channel, and some providers prompt tags even on models
+ * without native thinking. The tags are reasoning — never reply text — so
+ * they are streamed out as `reasoning` (the same surface a provider
+ * `reasoning`/`reasoning_content` field uses) and the surrounding text alone
+ * is content. Tags can split across any chunk boundary, so trailing
+ * characters that could still form a tag are held back until the next chunk.
+ */
+function inlineThinking() {
+  const OPEN = "<thinking>";
+  const CLOSE = "</thinking>";
+  let buffer = "";
+  let inTag = false;
+
+  /** How many trailing chars of `text` could still begin `token`. */
+  const prefixTail = (text: string, token: string): number => {
+    const max = Math.min(text.length, token.length - 1);
+    for (let keep = max; keep >= 1; keep--) {
+      if (token.startsWith(text.slice(-keep))) return keep;
+    }
+    return 0;
+  };
+
+  return {
+    /** Feed one content chunk; returns the text and reasoning it releases. */
+    push(chunk: string): { text: string; reasoning: string } {
+      let text = "";
+      let reasoning = "";
+      buffer += chunk;
+      for (;;) {
+        if (inTag) {
+          const close = buffer.indexOf(CLOSE);
+          if (close !== -1) {
+            reasoning += buffer.slice(0, close);
+            buffer = buffer.slice(close + CLOSE.length);
+            inTag = false;
+            continue;
+          }
+          const keep = prefixTail(buffer, CLOSE);
+          reasoning += buffer.slice(0, buffer.length - keep);
+          buffer = buffer.slice(buffer.length - keep);
+          return { text, reasoning };
+        }
+        const open = buffer.indexOf(OPEN);
+        if (open !== -1) {
+          text += buffer.slice(0, open);
+          buffer = buffer.slice(open + OPEN.length);
+          inTag = true;
+          continue;
+        }
+        const keep = prefixTail(buffer, OPEN);
+        text += buffer.slice(0, buffer.length - keep);
+        buffer = buffer.slice(buffer.length - keep);
+        return { text, reasoning };
+      }
+    },
+    /** Release whatever is still buffered once the stream ends. */
+    flush(): { text: string; reasoning: string } {
+      let text = "";
+      let reasoning = "";
+      if (inTag) {
+        // Unclosed thinking (truncated stream) is reasoning, not content.
+        reasoning = buffer;
+      } else if (buffer.length > 0 && !OPEN.startsWith(buffer)) {
+        // A tail shorter than the tag was an aborted tag start, not content.
+        text = buffer;
+      }
+      buffer = "";
+      inTag = false;
+      return { text, reasoning };
+    },
+  };
+}
+
+/**
  * System-level tool contract for `envelope`/`prompted` modes. The envelope
  * schema itself carries only tool names + argument shapes, so without this
  * the model never sees tool descriptions or the output rule up front — which
@@ -148,8 +240,8 @@ function buildToolContract(tools: LLMToolDefinition[]): string {
   return (
     "You have access to the following tools. When the user's request requires one, " +
     "respond with ONLY the tool-call JSON envelope shown in the request — no prose, " +
-    "no markdown, no tool-call syntax. When no tool is needed, respond with the " +
-    'envelope\'s "answer" field.\n\nAvailable tools:\n' +
+    "no markdown, no tool-call syntax. When no tool is needed, reply conversationally " +
+    "in plain text — no JSON at all.\n\nAvailable tools:\n" +
     list
   );
 }
@@ -279,6 +371,10 @@ export async function* openAICompatibleStream(
   // the end of the stream (the JSON is not speech and cannot be acted on
   // until it is complete).
   let envelopeContent = "";
+  // Reasoning models sometimes stream their chain of thought as inline
+  // `<thinking>` tags instead of a native reasoning field; strip them out of
+  // content and surface them as `reasoning` (stateful across chunk splits).
+  const thinking = inlineThinking();
 
   for await (const chunk of parseSSE(response.body, signal, onTiming, idleTimeoutMs, label)) {
     const choice = chunk.choices?.[0];
@@ -307,17 +403,19 @@ export async function* openAICompatibleStream(
     if (!choice) continue;
 
     const delta = choice.delta;
-    const content = delta?.content ?? "";
-    // Thinking models stream reasoning before content; emit it so consumers
-    // can measure thinking time (and optionally surface it). Reasoning-only
-    // chunks carry empty content.
-    const reasoning = (delta?.reasoning ?? delta?.reasoning_content) ?? "";
+    // Strip inline `<thinking>` blocks out of the content (they are the
+    // model's reasoning, not the reply); the stripped text rides on the same
+    // `reasoning` surface as a provider reasoning field, which consumers can
+    // measure or display but is never spoken or written into the reply.
+    const partition = thinking.push(delta?.content ?? "");
+    const providerReasoning = (delta?.reasoning ?? delta?.reasoning_content) ?? "";
+    const reasoning = providerReasoning + partition.reasoning;
     if (usesEnvelope) {
-      envelopeContent += content;
-    } else if (content.length > 0 || reasoning.length > 0) {
+      envelopeContent += partition.text;
+    } else if (partition.text.length > 0 || reasoning.length > 0) {
       yield {
         type: "delta",
-        content,
+        content: partition.text,
         ...(reasoning.length > 0 ? { reasoning } : {}),
       };
     }
@@ -368,6 +466,15 @@ export async function* openAICompatibleStream(
     }
   }
 
+  // Anything left in the thinking partitioner once the stream ends: unclosed
+  // reasoning is dropped (never content), and an aborted tag start is dropped
+  // too. Real trailing content is flushed here.
+  const tail = thinking.flush();
+  if (tail.text) {
+    if (usesEnvelope) envelopeContent += tail.text;
+    else yield { type: "delta", content: tail.text };
+  }
+
   if (usesEnvelope) {
     let envelope:
       | { answer?: unknown; calls?: Array<{ name?: unknown; arguments?: unknown }> }
@@ -398,12 +505,24 @@ export async function* openAICompatibleStream(
       }
     }
     if (envelope === undefined) {
-      yield {
-        type: "error",
-        error: new Error(
-          `${label} ${toolMode} tool mode: model did not return a JSON envelope (${envelopeContent.slice(0, 120)})`,
-        ),
-      };
+      // Prompted mode has no endpoint guarantee (`envelope` mode's
+      // response_format enforces JSON). Smaller chat models often ignore the
+      // envelope instruction and reply in plain prose — that is still a valid
+      // reply, so speak it as the model's `answer` instead of failing the
+      // turn with a technical error. Only output that looks like a (broken)
+      // JSON attempt keeps the loud error, so a truncated envelope is never
+      // spoken as garbage.
+      if (toolMode === "prompted" && !looksLikeJsonAttempt(envelopeContent)) {
+        const answer = envelopeContent.trim();
+        if (answer.length > 0) yield { type: "delta", content: answer };
+      } else {
+        yield {
+          type: "error",
+          error: new Error(
+            `${label} ${toolMode} tool mode: model did not return a JSON envelope (${envelopeContent.slice(0, 120)})`,
+          ),
+        };
+      }
     } else {
       if (typeof envelope.answer === "string" && envelope.answer.length > 0) {
         yield { type: "delta", content: envelope.answer };

@@ -382,9 +382,10 @@ describe("Conversations", () => {
 
     // The orchestrator ran the pipeline: the LLM saw the turn (with its
     // automatic context suffix), TTS spoke, and both the turn and the
-    // generation are persisted.
+    // generation are persisted. Single-agent conversations omit the redundant
+    // per-agent `name` fields.
     expect(llm.requests[0]!.messages).toEqual([
-      { role: "system", name: "Jarvis", content: "Be concise." },
+      { role: "system", content: "Be concise." },
       {
         role: "user",
         content: expect.stringMatching(

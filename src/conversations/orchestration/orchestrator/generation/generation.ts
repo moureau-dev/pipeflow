@@ -22,6 +22,16 @@ export interface GenerationRequest {
   maxToolIterations: number;
   /** False once the run is stale (interrupt/stop); aborts the loop. */
   isCurrent(): boolean;
+  /**
+   * Whether outgoing messages keep per-agent `name` fields on system and
+   * assistant messages. Multi-agent conversations need them so the model can
+   * tell which agent said what in the shared history. Single-agent
+   * conversations drop them: with one agent the names carry no information,
+   * and some providers render a message `name` as a role header ("Scout:")
+   * that weaker models imitate — every reply then starts by speaking the
+   * agent's name. Default true.
+   */
+  agentNames?: boolean;
   /** Streamed text; `textBefore` is the running text prior to this delta. */
   onDelta?(delta: string, textBefore: string): void;
   /** Hand tool calls to the application and resolve their results. */
@@ -58,6 +68,7 @@ export class GenerationRunner {
       maxTokens,
       maxToolIterations,
       isCurrent,
+      agentNames = true,
       onDelta,
       resolveToolCalls,
     } = request;
@@ -71,7 +82,13 @@ export class GenerationRunner {
         const toolCalls: LLMToolCall[] = [];
         let done = false;
 
-        for await (const event of llm.stream({ messages, tools, temperature, maxTokens })) {
+        // Single-agent conversations don't need per-agent `name` fields (see
+        // GenerationRequest.agentNames): strip them before every call, since
+        // the tool loop appends fresh messages between iterations. Never
+        // mutate the caller's array.
+        const wireMessages = agentNames ? messages : withoutAgentNames(messages);
+
+        for await (const event of llm.stream({ messages: wireMessages, tools, temperature, maxTokens })) {
           if (!isCurrent()) return { text, status: "interrupted" };
           switch (event.type) {
             case "delta": {
@@ -119,4 +136,25 @@ export class GenerationRunner {
       return { text, status: "error", error };
     }
   }
+}
+
+/**
+ * Clone the messages with per-agent `name` fields removed from system and
+ * assistant messages. Tool messages keep their `name` (the wire format
+ * requires it on `role: "tool"`), and user messages never carry one.
+ */
+function withoutAgentNames(messages: LLMMessage[]): LLMMessage[] {
+  let hasNames = false;
+  for (const message of messages) {
+    if (message.name && (message.role === "system" || message.role === "assistant")) {
+      hasNames = true;
+      break;
+    }
+  }
+  if (!hasNames) return messages;
+  return messages.map((message) =>
+    message.name && (message.role === "system" || message.role === "assistant")
+      ? { ...message, name: undefined }
+      : message,
+  );
 }

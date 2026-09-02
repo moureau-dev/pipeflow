@@ -89,6 +89,64 @@ describe("OpenRouterLLM", () => {
     ]);
   });
 
+  test("splits inline <thinking> tags out of content and surfaces them as reasoning", async () => {
+    // Models without a native reasoning field (nova via OpenRouter) stream
+    // their chain of thought inside <thinking> tags in the content. It must
+    // not become reply text.
+    const llm = new OpenRouterLLM({
+      apiKey: "test-key",
+      fetch: async () =>
+        sseResponse(
+          sseFrame(
+            deltaChunk(
+              "<thinking>The user asked for weather, so I need the tool.</thinking>It is sunny in Paris!",
+            ),
+          ),
+          sseFrame(deltaChunk(""), "stop"),
+        ),
+    });
+
+    const events = [];
+    for await (const event of llm.stream(basicRequest)) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: "delta",
+        content: "It is sunny in Paris!",
+        reasoning: "The user asked for weather, so I need the tool.",
+      },
+      { type: "done" },
+    ]);
+  });
+
+  test("handles inline <thinking> tags split across stream chunks", async () => {
+    const llm = new OpenRouterLLM({
+      apiKey: "test-key",
+      fetch: async () =>
+        sseResponse(
+          sseFrame(deltaChunk("The answer is ")),
+          sseFrame(deltaChunk("<thin")),
+          sseFrame(deltaChunk("king>the reasoning text</thin")),
+          sseFrame(deltaChunk("king>Paris!")),
+          sseFrame(deltaChunk(""), "stop"),
+        ),
+    });
+
+    const events = [];
+    for await (const event of llm.stream(basicRequest)) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      { type: "delta", content: "The answer is " },
+      { type: "delta", content: "", reasoning: "the reasoning text" },
+      { type: "delta", content: "Paris!" },
+      { type: "done" },
+    ]);
+  });
+
   test("surfaces an empty 200 with finish_reason error/content_filter as an error event", async () => {
     // Providers such as gemini on OpenRouter occasionally return HTTP 200
     // with no output and finish_reason "error" — a silent empty completion
@@ -311,7 +369,8 @@ describe("OpenRouterLLM", () => {
     expect(contract).toContain("- get_weather: Get the current weather for a city.");
     expect(contract).toContain("no tool-call syntax");
     const last = body.messages.at(-1)!.content;
-    expect(last).toContain("Respond with ONLY valid JSON");
+    expect(last).toContain("ONLY valid JSON matching this schema");
+    expect(last).toContain("plain conversational text");
     expect(last).toContain("get_weather");
     expect(events).toEqual([
       {
@@ -385,6 +444,79 @@ describe("OpenRouterLLM", () => {
       messages: [{ role: "user", content: "hi" }],
       tools: [weatherTool],
       toolMode: "envelope",
+    })) {
+      events.push(event);
+    }
+    expect(events).toHaveLength(2);
+    expect(events[0]).toMatchObject({ type: "error" });
+    expect(events[1]).toEqual({ type: "done" });
+  });
+
+  test("prompted mode speaks a prose reply when the model ignores the envelope", async () => {
+    // Smaller chat models (e.g. amazon/nova-micro) often ignore the envelope
+    // instruction and answer in plain text. That is still a valid reply: it
+    // must stream as a delta instead of failing the whole generation.
+    const llm = new OpenRouterLLM({
+      apiKey: "test-key",
+      fetch: async () =>
+        sseResponse(
+          sseFrame(
+            JSON.stringify({
+              choices: [
+                {
+                  delta: {
+                    content: "Sorry, I can't tell you the weather without a city. Can you tell me where you are?",
+                  },
+                  finish_reason: null,
+                },
+              ],
+            }),
+          ),
+          sseFrame(deltaChunk(""), "stop"),
+        ),
+    });
+
+    const events = [];
+    for await (const event of llm.stream({
+      messages: [{ role: "user", content: "hi" }],
+      tools: [weatherTool],
+      toolMode: "prompted",
+    })) {
+      events.push(event);
+    }
+
+    expect(events).toEqual([
+      {
+        type: "delta",
+        content: "Sorry, I can't tell you the weather without a city. Can you tell me where you are?",
+      },
+      { type: "done" },
+    ]);
+  });
+
+  test("prompted mode still reports a broken JSON attempt as an error", async () => {
+    // A reply that clearly tried to emit the envelope (and got truncated) is
+    // not speakable prose — keep the loud error so it isn't read as garbage.
+    const llm = new OpenRouterLLM({
+      apiKey: "test-key",
+      fetch: async () =>
+        sseResponse(
+          sseFrame(
+            JSON.stringify({
+              choices: [
+                { delta: { content: '{"calls":[{"name":"get_weather",' }, finish_reason: null },
+              ],
+            }),
+          ),
+          sseFrame(deltaChunk(""), "stop"),
+        ),
+    });
+
+    const events = [];
+    for await (const event of llm.stream({
+      messages: [{ role: "user", content: "weather in Oslo?" }],
+      tools: [weatherTool],
+      toolMode: "prompted",
     })) {
       events.push(event);
     }

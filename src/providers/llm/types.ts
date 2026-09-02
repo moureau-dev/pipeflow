@@ -46,7 +46,10 @@ export interface LLMToolDefinition {
  * - `prompted` — no `tools`; the same envelope is requested by appending an
  *   instruction to the last user message. The universal fallback: works on
  *   any chat model, at the cost of extraction/repair/retry, higher token
- *   use, and tail-latency risk.
+ *   use, and tail-latency risk. Because nothing constrains the output, a
+ *   model that ignores the envelope and replies in plain prose is answered
+ *   directly — its text is treated as the reply rather than failing the
+ *   generation.
  */
 export type ToolMode = "native" | "envelope" | "prompted";
 

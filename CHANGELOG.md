@@ -9,6 +9,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Server-side audio reordering (`listen({ sequence })`)** — `Conversation`
+  gains netcode-style reordering before STT, like client-side prediction in
+  multiplayer games: transports and client transforms (async VAD, worker
+  inference) can deliver audio out of order, so `listen()` now accepts the
+  sender's capture-order `sequence` and reorders per participant before
+  anything reaches the orchestrator. In-order chunks (the common case) are
+  emitted immediately with no added latency; a chunk arriving ahead of a
+  gap is held for `audioReorderMs` (default 100, set on `create()`) so a
+  packet still in flight can fill it; when the window expires the gap is
+  skipped and the buffer is released in order, and the late chunk is
+  dropped. Late and duplicate sequences are always dropped, each
+  participant's stream is independent (first chunk anchors the baseline),
+  `stop()` clears the buffers, and without a `sequence` the chunk is
+  emitted on arrival exactly as before. Emitted `audio-in` events keep
+  their own conversation-level sequence, renumbered in release order —
+  always increasing, so persistence and transcripts see clean ordering.
+- **Async client capture transform** — `audio.transform` may now return a
+  promise (worker/model-based VAD such as Silero, onnxruntime, anything via
+  `postMessage`). Each chunk's `sequence` is assigned at capture time,
+  pre-transform, so chunks sent out of order still mark their capture
+  position and the server's reorder buffer restores capture order before
+  STT. A transform slower than the capture rate loses audio at the gaps
+  past the server's hold window — keep it faster than real-time. Sync
+  transforms (energy gates) are unchanged.
+- **Client capture gate (`audio.transform`)** — `PipeflowClient`'s built-in
+  mic capture accepts `audio.transform(chunk)`: return a chunk to send it
+  (possibly rewritten) or `null` to drop it — the seam for client-side VAD
+  (energy gate, Silero, WebRTC, …) without reimplementing the capture
+  plumbing. It applies only to captured mic audio; manual `sendAudio()`
+  calls hit the wire untouched, keeping the send path a faithful transport
+  so gating policy lives only where capture was explicitly opted into. A
+  throwing transform surfaces an `error` event and drops the chunk without
+  stopping the capture loop.
+- **Explicit mic capture constraints** — the client's mic now opens with
+  `echoCancellation`, `noiseSuppression`, and `autoGainControl` on by
+  default (overridable via `audio.constraints`). Without echo cancellation
+  the speaker's audio re-enters the mic, the server hears the agent's own
+  reply, and barge-in self-triggers in a feedback loop; noise suppression
+  keeps pops and room tone from becoming transcribed stage directions. The
+  example's client already set these by hand — the SDK now does it by
+  default.
+- **Browser/Node client SDK** — `@moureau/pipeflow/client` ships a typed
+  `PipeflowClient` that mirrors the `Conversation` event surface (`start`,
+  `stop`, `turn`, `transcript`, `audio`, `generation`, `tool-call`,
+  `tool-call-result`, `interrupt`, `error`, …) over a swappable `Protocol`
+  wire. Ships a `WebSocketProtocol` (lazy token provider appended as
+  `?token=`); bring your own SSE / WebRTC / custom transport by implementing
+  the 4-method `Protocol` contract. Optional mic capture (`audio.input`),
+  exponential-backoff auto-reconnect, and a JSON-serializability guard on
+  outbound payloads.
+
 - **Whisper hallucination filter** — `OpenRouterSTT` cleans transcripts by
   default before emission: asterisk stage directions (`*Dramatic music*`) are
   dropped, consecutive repeated sentences (`Thank you. Thank you.`) collapse

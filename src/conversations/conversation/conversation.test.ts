@@ -191,6 +191,107 @@ describe("Conversation", () => {
     ).toThrow(/not started/);
   });
 
+  describe("listen with sequence (reorder buffer)", () => {
+    function makeReorderingConversation(audioReorderMs = 10): Conversation {
+      const conversation = new Conversation({ id: "conv-1", audioReorderMs });
+      conversation.start();
+      return conversation;
+    }
+
+    function collectAudioIn(conversation: Conversation): Uint8Array[] {
+      const chunks: Uint8Array[] = [];
+      conversation.on("audio-in", (payload) => chunks.push(payload.audio.data));
+      return chunks;
+    }
+
+    test("in-order sequence numbers are emitted immediately", async () => {
+      const conversation = makeReorderingConversation();
+      const chunks = collectAudioIn(conversation);
+      await conversation.participate({ userId: "alice" });
+
+      conversation.listen({ userId: "alice", audio: new Uint8Array([1]), sequence: 0 });
+      conversation.listen({ userId: "alice", audio: new Uint8Array([2]), sequence: 1 });
+      conversation.listen({ userId: "alice", audio: new Uint8Array([3]), sequence: 2 });
+
+      expect(chunks.map((c) => [...c])).toEqual([[1], [2], [3]]);
+    });
+
+    test("a chunk ahead of a gap is held, then released in order", async () => {
+      const conversation = makeReorderingConversation();
+      const chunks = collectAudioIn(conversation);
+      await conversation.participate({ userId: "alice" });
+
+      conversation.listen({ userId: "alice", audio: new Uint8Array([1]), sequence: 0 });
+      conversation.listen({ userId: "alice", audio: new Uint8Array([3]), sequence: 2 });
+      expect(chunks.map((c) => [...c])).toEqual([[1]]); // 3 is held
+
+      conversation.listen({ userId: "alice", audio: new Uint8Array([2]), sequence: 1 });
+      expect(chunks.map((c) => [...c])).toEqual([[1], [2], [3]]);
+    });
+
+    test("a gap is skipped after the hold window expires and a late chunk is dropped", async () => {
+      const conversation = makeReorderingConversation(10);
+      const chunks = collectAudioIn(conversation);
+      await conversation.participate({ userId: "alice" });
+
+      conversation.listen({ userId: "alice", audio: new Uint8Array([1]), sequence: 0 });
+      conversation.listen({ userId: "alice", audio: new Uint8Array([3]), sequence: 2 });
+      await new Promise((r) => setTimeout(r, 30)); // hold window expires
+      expect(chunks.map((c) => [...c])).toEqual([[1], [3]]); // 2 skipped
+
+      // The missing chunk arrives too late — dropped, not emitted.
+      conversation.listen({ userId: "alice", audio: new Uint8Array([2]), sequence: 1 });
+      expect(chunks.map((c) => [...c])).toEqual([[1], [3]]);
+    });
+
+    test("late and duplicate chunks are dropped", async () => {
+      const conversation = makeReorderingConversation();
+      const chunks = collectAudioIn(conversation);
+      await conversation.participate({ userId: "alice" });
+
+      conversation.listen({ userId: "alice", audio: new Uint8Array([1]), sequence: 0 });
+      conversation.listen({ userId: "alice", audio: new Uint8Array([1]), sequence: 0 });
+      conversation.listen({ userId: "alice", audio: new Uint8Array([2]), sequence: 1 });
+      conversation.listen({ userId: "alice", audio: new Uint8Array([0]), sequence: 99 });
+      expect(chunks.map((c) => [...c])).toEqual([[1], [2]]);
+    });
+
+    test("reordering is independent per participant", async () => {
+      const conversation = makeReorderingConversation();
+      const chunks: { userId: string; data: Uint8Array }[] = [];
+      conversation.on("audio-in", (payload) =>
+        chunks.push({ userId: payload.userId, data: payload.audio.data }),
+      );
+      await conversation.participate([{ userId: "alice" }, { userId: "bob" }]);
+
+      conversation.listen({ userId: "alice", audio: new Uint8Array([1]), sequence: 0 });
+      // Bob's stream starts at its own baseline and emits immediately.
+      conversation.listen({ userId: "bob", audio: new Uint8Array([2]), sequence: 5 });
+      conversation.listen({ userId: "bob", audio: new Uint8Array([3]), sequence: 6 });
+      conversation.listen({ userId: "alice", audio: new Uint8Array([4]), sequence: 1 });
+
+      expect(chunks).toEqual([
+        { userId: "alice", data: new Uint8Array([1]) },
+        { userId: "bob", data: new Uint8Array([2]) },
+        { userId: "bob", data: new Uint8Array([3]) },
+        { userId: "alice", data: new Uint8Array([4]) },
+      ]);
+    });
+
+    test("stop clears the reorder buffers", async () => {
+      const conversation = makeReorderingConversation(10);
+      const chunks = collectAudioIn(conversation);
+      await conversation.participate({ userId: "alice" });
+
+      conversation.listen({ userId: "alice", audio: new Uint8Array([1]), sequence: 0 });
+      conversation.listen({ userId: "alice", audio: new Uint8Array([3]), sequence: 2 });
+      await conversation.stop();
+      await new Promise((r) => setTimeout(r, 30));
+
+      expect(chunks.map((c) => [...c])).toEqual([[1]]);
+    });
+  });
+
   test("send requires a started conversation", () => {
     const { conversation } = makeConversation();
     expect(() => conversation.send({ userId: "alice", text: "hi" })).toThrow(

@@ -61,6 +61,29 @@ export interface ConversationOptions {
    * `SpeechPipelineOptions.maxConcurrentRequests`.
    */
   maxConcurrentTtsRequests?: number;
+  /**
+   * Hold window (ms) for out-of-order audio (default 100). When `listen()`
+   * receives a chunk whose `sequence` skips ahead of the expected one, the
+   * chunk is held briefly so a packet still in flight can fill the gap —
+   * netcode-style reordering, like client-side prediction in multiplayer
+   * games. When the window expires the gap is skipped and the buffered
+   * chunks are released in order. In-order audio (the common case) is
+   * emitted immediately, with no added latency.
+   */
+  audioReorderMs?: number;
+}
+
+/** Per-participant reorder state for sequenced audio (`listen({ sequence })`). */
+interface AudioReorderState {
+  /**
+   * Next sequence expected to be emitted. `null` until the user's first
+   * chunk adopts its sequence as the baseline — earlier history is unknown.
+   */
+  next: number | null;
+  /** Chunks received ahead of `next`, keyed by sequence. */
+  pending: Map<number, Uint8Array>;
+  /** Timer that releases `pending` when a gap outlives the hold window. */
+  timer: ReturnType<typeof setTimeout> | null;
 }
 
 export interface ConversationEvents {
@@ -132,6 +155,8 @@ export class Conversation {
   >();
   private readonly pendingToolCallsById = new Map<string, ToolCall>();
   private readonly subGenerations = new Map<string, Generation>();
+  private readonly audioReorderMs: number;
+  private readonly audioReorder = new Map<UserId, AudioReorderState>();
   private nextAudioSequence = 0;
 
   constructor(options: ConversationOptions) {
@@ -142,6 +167,7 @@ export class Conversation {
     this.tts = options.tts;
     this.autoExecuteTools = options.autoExecuteTools ?? true;
     this.maxConcurrentTtsRequests = options.maxConcurrentTtsRequests;
+    this.audioReorderMs = options.audioReorderMs ?? 100;
     this.transcription = new Transcription(this.id);
     this.state = createConversationState();
   }
@@ -178,6 +204,8 @@ export class Conversation {
   async stop(): Promise<void> {
     if (this.state.status === "stopped") return;
     this.state.status = "stopped";
+    for (const state of this.audioReorder.values()) this.clearReorderTimer(state);
+    this.audioReorder.clear();
     this.pendingToolCallsById.clear();
     const cancelled = this.cancelCurrentGeneration();
     if (cancelled) {
@@ -235,20 +263,94 @@ export class Conversation {
   /**
    * Send an audio packet. Intentionally synchronous: it means "send this
    * packet", not "wait for this utterance to finish".
+   *
+   * Pass the sender's `sequence` number to enable netcode-style reordering:
+   * chunks arriving ahead of a gap are held for `audioReorderMs` so an
+   * earlier packet still in flight can fill it, then released in order
+   * (gaps are skipped when the window expires). The orchestrator and STT
+   * always see the participant's audio in sequence order. Without a
+   * `sequence`, the chunk is emitted on arrival, as-is.
    */
-  listen(input: { userId: UserId; audio: Uint8Array }): void {
+  listen(input: { userId: UserId; audio: Uint8Array; sequence?: number }): void {
     if (this.state.status !== "started") {
       throw new Error(`Conversation "${this.id}" is not started`);
     }
     if (!this.state.participants.has(input.userId)) {
       throw new Error(`Unknown participant "${input.userId}"`);
     }
+    if (input.sequence === undefined) {
+      this.emitAudioIn(input.userId, input.audio);
+      return;
+    }
+    this.reorderAudio(input.userId, input.audio, input.sequence);
+  }
+
+  /** Emit an audio-in event with the conversation's own sequence numbering. */
+  private emitAudioIn(userId: UserId, data: Uint8Array): void {
     const chunk: AudioChunk = {
-      data: input.audio,
+      data,
       timestamp: Date.now(),
       sequence: this.nextAudioSequence++,
     };
-    this.emit("audio-in", { conversationId: this.id, userId: input.userId, audio: chunk });
+    this.emit("audio-in", { conversationId: this.id, userId, audio: chunk });
+  }
+
+  /** Hold/drain logic for sequenced audio, keyed per participant. */
+  private reorderAudio(userId: UserId, data: Uint8Array, sequence: number): void {
+    let state = this.audioReorder.get(userId);
+    if (!state) {
+      state = { next: null, pending: new Map(), timer: null };
+      this.audioReorder.set(userId, state);
+    }
+    // The participant's first chunk anchors the stream: anything before it
+    // is unknown history.
+    if (state.next === null) state.next = sequence;
+    if (sequence < state.next) return; // late or duplicate — already released
+    if (sequence === state.next) {
+      this.clearReorderTimer(state);
+      this.emitAudioIn(userId, data);
+      state.next++;
+      while (state.pending.has(state.next)) {
+        const held = state.pending.get(state.next)!;
+        state.pending.delete(state.next);
+        this.emitAudioIn(userId, held);
+        state.next++;
+      }
+      return;
+    }
+    // Ahead of the expected sequence: hold so the gap can fill, and start
+    // the release timer if it is not already running.
+    state.pending.set(sequence, data);
+    if (!state.timer) {
+      state.timer = setTimeout(() => {
+        state.timer = null;
+        this.releaseReorderBuffer(userId);
+      }, this.audioReorderMs);
+    }
+  }
+
+  /**
+   * Release everything a participant has buffered, in sequence order,
+   * skipping the gap that never filled.
+   */
+  private releaseReorderBuffer(userId: UserId): void {
+    const state = this.audioReorder.get(userId);
+    if (!state) return;
+    this.clearReorderTimer(state);
+    while (state.pending.size > 0) {
+      const sequence = Math.min(...state.pending.keys());
+      const data = state.pending.get(sequence)!;
+      state.pending.delete(sequence);
+      state.next = sequence + 1;
+      this.emitAudioIn(userId, data);
+    }
+  }
+
+  private clearReorderTimer(state: AudioReorderState): void {
+    if (state.timer) {
+      clearTimeout(state.timer);
+      state.timer = null;
+    }
   }
 
   /**

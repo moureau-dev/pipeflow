@@ -21,6 +21,11 @@ export interface CreateConversationOptions {
    * rate-limit concurrent requests.
    */
   maxConcurrentTtsRequests?: number;
+  /**
+   * Hold window (ms) for out-of-order audio (default 100). See
+   * `ConversationOptions.audioReorderMs`.
+   */
+  audioReorderMs?: number;
 }
 
 export interface ConversationsOptions {
@@ -66,6 +71,9 @@ export class Conversations {
       autoExecuteTools: options.autoExecuteTools ?? this.autoExecuteTools,
       ...(options.maxConcurrentTtsRequests !== undefined
         ? { maxConcurrentTtsRequests: options.maxConcurrentTtsRequests }
+        : {}),
+      ...(options.audioReorderMs !== undefined
+        ? { audioReorderMs: options.audioReorderMs }
         : {}),
     });
   }

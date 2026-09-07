@@ -69,4 +69,29 @@ coordinator's current generation.
 - The conversation does not require an agent — without one, `start()` runs in
   transcription-only mode (turns and transcripts out).
 
+## Audio reordering
+
+Transports and client transforms (async VAD, worker inference) can deliver
+audio out of order. Pass the sender's capture-order `sequence` to
+`listen()` and the conversation reorders per participant before anything
+reaches STT — the same model as client-side prediction in multiplayer
+games:
+
+```ts
+conversation.listen({ userId: "alice", audio, sequence: wire.sequence });
+```
+
+- In-order chunks (the common case) are emitted immediately — no added
+  latency.
+- A chunk arriving ahead of a gap is held for `audioReorderMs` (default
+  100, set on `create()`), so a packet still in flight can fill it.
+- When the window expires the gap is skipped and the buffer is released in
+  order; the missing chunk arrives late and is dropped.
+- Late and duplicate sequences are always dropped. Each participant's
+  stream is independent; their first chunk anchors the baseline.
+
+Without a `sequence`, the chunk is emitted on arrival, exactly as before.
+The emitted `audio-in` events keep their own conversation-level sequence,
+renumbered in release order, so they are always increasing.
+
 See the root [README](../../../README.md) for the public API.

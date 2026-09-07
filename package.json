@@ -28,6 +28,12 @@
       "require": "./dist/cjs/index.js",
       "default": "./dist/esm/index.js"
     },
+    "./client": {
+      "types": "./dist/types/client/index.d.ts",
+      "import": "./dist/esm/client/index.js",
+      "require": "./dist/cjs/client/index.js",
+      "default": "./dist/esm/client/index.js"
+    },
     "./providers": {
       "types": "./dist/types/providers/index.d.ts",
       "import": "./dist/esm/providers/index.js",

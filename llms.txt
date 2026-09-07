@@ -81,6 +81,9 @@ conversation.on("audio", ({ audio }) => {
 // Core
 import { Pipeflow, PipeflowTool } from "@moureau/pipeflow";
 
+// Browser/Node client
+import { PipeflowClient, WebSocketProtocol } from "@moureau/pipeflow/client";
+
 // Providers
 import { DeepSeekLLM, OpenRouterLLM, OpenAILLM, ClaudeLLM } from "@moureau/pipeflow/providers";
 import { DeepgramSTT } from "@moureau/pipeflow/providers";
@@ -114,6 +117,12 @@ interrupt()    // stops TTS, cancels current generation (barge-in)
 
 ```ts
 conversation.listen({ userId, audio });
+```
+
+Pass the sender's capture-order `sequence` to enable netcode-style reordering: chunks arriving ahead of a gap are held for `audioReorderMs` (default 100, set on `create()`) so a packet still in flight can fill it, then released in order before STT. In-order audio (the common case) is emitted immediately. Late and duplicate sequences are dropped.
+
+```ts
+conversation.listen({ userId, audio, sequence: wire.sequence });
 ```
 
 `send({ userId, text })` does the same for a finalized text turn, bypassing STT.
@@ -325,6 +334,48 @@ const getTranscript = new PipeflowTool({
 
 ---
 
+## Browser Client
+
+The `@moureau/pipeflow/client` subpath ships a typed browser/Node SDK for talking to a Pipeflow server: `PipeflowClient` mirrors the `Conversation` event surface over a swappable `Protocol` (a `WebSocketProtocol` is included).
+
+```ts
+import { PipeflowClient, WebSocketProtocol } from "@moureau/pipeflow/client";
+
+const client = new PipeflowClient({
+  protocol: new WebSocketProtocol({
+    url: "wss://api.example.com/conversations/abc",
+    token: () => localStorage.getItem("jwt"), // resolved on each connect()
+  }),
+  audio: { input: true }, // opt-in mic capture
+  reconnect: { maxAttempts: 5 },
+  userId: "alice",
+});
+
+client.on("turn", (e) => console.log(e.turn.text));
+client.on("audio", (e) => client.playAudio(e.audio));
+await client.connect();
+await client.sendText("hello"); // bypasses STT
+```
+
+Events mirror the conversation surface (`start`, `stop`, `turn`, `transcript`, `partial-transcript`, `audio`, `generation`, `tool-call`, `tool-call-result`, `interrupt`, `error`, `state`). Outbound: `sendText()`, `sendAudio()`, `interrupt()`, `resolveToolCall()`. Playback is the caller's job — wire the `audio` event into your own `AudioContext`/`<audio>` queue or override `playAudio()`. Unknown message types are ignored, so the client stays forward-compatible.
+
+### Capture gate
+
+`audio.transform` gates or rewrites captured mic audio before it hits the wire — the seam for client-side VAD. Return a chunk to send it, `null` to drop it. It may be async: chunks are sent as the hook resolves and their `sequence` marks capture order, so the server reorders them before STT (see `Conversation.listen({ sequence })`). Applies only to captured audio; manual `sendAudio()` calls go out untouched.
+
+```ts
+audio: {
+  input: true,
+  transform: (chunk) => isSpeech(chunk) ? chunk : null, // your VAD
+}
+```
+
+The mic opens with `echoCancellation`, `noiseSuppression`, and `autoGainControl` on by default (overridable via `audio.constraints`) — without echo cancellation the mic re-captures the agent's own reply and barge-in self-triggers.
+
+`Protocol` is a small contract: `connect`, `close`, `send`, `onMessage`, `onStatus`, plus a `status` getter — bring your own transport (SSE, WebRTC, in-memory tests) without touching application code.
+
+---
+
 ## Providers
 
 | Interface | Provider | Package |
@@ -384,6 +435,7 @@ Everything happens as a stream — Pipeflow does not wait for a complete recordi
 | Import path | Description |
 |---|---|
 | `@moureau/pipeflow` | Core: `Pipeflow`, `PipeflowTool`, `Agent` |
+| `@moureau/pipeflow/client` | Browser/Node client: `PipeflowClient`, `WebSocketProtocol`, `Protocol` |
 | `@moureau/pipeflow/providers` | All provider adapters |
 | `@moureau/pipeflow/persistence` | Persistence adapters (`SQLitePersistence`) |
 | `@moureau/pipeflow/transport` | Transport adapters |

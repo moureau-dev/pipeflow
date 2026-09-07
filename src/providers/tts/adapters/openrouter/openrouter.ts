@@ -8,7 +8,8 @@ export interface OpenRouterTTSOptions {
   /**
    * TTS model. Defaults to the free `fish-audio/s2.1-pro-free:free` variant —
    * fast, per-character priced. Pass `fish-audio/s2.1-pro` for the paid tier
-   * (no free-variant rate limits).
+   * (no free-variant rate limits). Note the free variant is intermittently
+   * unavailable on OpenRouter (404 "No endpoints found").
    */
   model?: string;
   /**
@@ -28,6 +29,15 @@ export interface OpenRouterTTSOptions {
   format?: "pcm" | "mp3";
   /** Size of the audio chunks yielded from the response stream. Default 8192. */
   chunkSize?: number;
+  /**
+   * Abort a synthesis that delivers no audio bytes for this long (default
+   * 15000ms). A provider connection that goes silent — or never responds —
+   * would otherwise wedge the speech pipeline forever, since the pipeline
+   * holds one synthesis slot and its delivery chain until the stream ends.
+   * Any byte resets the clock; a genuinely slow synthesis just needs a
+   * response within this window.
+   */
+  idleTimeoutMs?: number;
   /** Injectable fetch, mainly for tests. */
   fetch?: FetchLike;
 }
@@ -47,6 +57,7 @@ export class OpenRouterTTS implements TTS {
   private readonly voice: string;
   private readonly format: "pcm" | "mp3";
   private readonly chunkSize: number;
+  private readonly idleTimeoutMs: number;
   private readonly fetchImpl: FetchLike;
   private readonly streams = new Set<AbortController>();
 
@@ -60,6 +71,7 @@ export class OpenRouterTTS implements TTS {
     this.voice = options.voice ?? "";
     this.format = options.format ?? "pcm";
     this.chunkSize = options.chunkSize ?? 8192;
+    this.idleTimeoutMs = options.idleTimeoutMs ?? 15_000;
     this.fetchImpl = options.fetch ?? fetch;
   }
 
@@ -77,6 +89,11 @@ export class OpenRouterTTS implements TTS {
 
     const controller = new AbortController();
     this.streams.add(controller);
+    // Every await is bounded by an idle clock: a request that never responds,
+    // or a connection that goes silent mid-stream, aborts with a clear error
+    // instead of holding the speech pipeline's synthesis slot and delivery
+    // chain open forever (the reply would otherwise wait for the next input).
+    let timedOut = false;
 
     try {
       const body: Record<string, unknown> = {
@@ -92,15 +109,22 @@ export class OpenRouterTTS implements TTS {
       };
       if (request.speed !== undefined) body.speed = request.speed;
 
-      const response = await this.fetchImpl(`${this.baseUrl}/audio/speech`, {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          authorization: `Bearer ${this.apiKey}`,
+      const response = await withTimeout(
+        this.fetchImpl(`${this.baseUrl}/audio/speech`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            authorization: `Bearer ${this.apiKey}`,
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        }),
+        this.idleTimeoutMs,
+        () => {
+          timedOut = true;
+          controller.abort();
         },
-        body: JSON.stringify(body),
-        signal: controller.signal,
-      });
+      );
 
       if (!response.ok) {
         // Non-200 responses carry a JSON error body, not audio.
@@ -119,17 +143,63 @@ export class OpenRouterTTS implements TTS {
         if (controller.signal.aborted) {
           throw new DOMException("The operation was aborted.", "AbortError");
         }
-        const { done, value } = await reader.read();
+        const { done, value } = await withTimeout(
+          reader.read(),
+          this.idleTimeoutMs,
+          () => {
+            timedOut = true;
+            controller.abort();
+          },
+        );
         if (done) break;
         buffer = yield* sliceChunks(concat(buffer, value), this.chunkSize);
       }
       if (buffer.length > 0) {
         yield buffer;
       }
+    } catch (error) {
+      // Translate the watchdog's abort into a clear failure. Real aborts
+      // (`stop()`, interrupts) keep their AbortError so callers can tell the
+      // difference.
+      if (timedOut) {
+        throw new Error(`OpenRouter TTS produced no audio for ${this.idleTimeoutMs}ms`);
+      }
+      throw error;
     } finally {
       this.streams.delete(controller);
     }
   }
+}
+
+/**
+ * Race `promise` against a timeout: reject after `ms` and fire `onTimeout`
+ * (which should abort the underlying request) so a hanging operation is
+ * released rather than left pending forever.
+ */
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  onTimeout: () => void,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const cleanup = () => clearTimeout(timer);
+    timer = setTimeout(() => {
+      cleanup();
+      onTimeout();
+      reject(new Error(`timed out after ${ms}ms`));
+    }, ms);
+    promise.then(
+      (value) => {
+        cleanup();
+        resolve(value);
+      },
+      (error) => {
+        cleanup();
+        reject(error);
+      },
+    );
+  });
 }
 
 function concat(

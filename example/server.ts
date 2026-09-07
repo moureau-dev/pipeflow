@@ -15,13 +15,17 @@
 //         (Portuguese → Japanese/Korean gibberish); set `STT_LANGUAGE` to an
 //         ISO-639-1 code (e.g. `STT_LANGUAGE=pt`) to pin the language. Unset
 //         = provider-side detection.
-//   LLM  meta-llama/llama-4-scout        — native tool calling (the default).
-//   TTS  fish-audio/s2.1-pro-free:free   — the SpeechPipeline buffers the LLM
-//         deltas into sentences and pre-starts the next sentence's synthesis
-//         while the current one is still streaming, delivering in order. The
-//         adapter is set to mp3 (self-describing sample rate) and a large
-//         chunk size, so each sentence arrives as one binary frame the client
-//         can decode at the provider's real rate.
+//   LLM  amazon/nova-micro-v1            — native tool calling. Swap any model:
+//         `OPENROUTER_MODEL=... bun run example/server.ts` is not wired here;
+//         edit the `model` line below. Native tools need a model whose
+//         endpoint supports them.
+//   TTS  fish-audio/s2.1-pro              — the SpeechPipeline buffers the LLM
+//         deltas into sentences and synthesizes them in parallel (up to
+//         `maxConcurrentTtsRequests`), delivering in order. The adapter is set
+//         to mp3 (self-describing sample rate) and a large chunk size, so each
+//         sentence arrives as one binary frame the client can decode at the
+//         provider's real rate. Override with `TTS_MODEL=fish-audio/s2.1-pro:free`
+//         to use the free variant (intermittently unavailable + slower).
 //
 // Barge-in: when the user speaks over the agent, the server aborts the
 // generation/synthesis and forwards an `interrupt` message; the client cuts
@@ -73,6 +77,12 @@ const stt = new OpenRouterSTT({
 });
 const tts = new OpenRouterTTS({
     apiKey,
+    // The `:free` fish variant is intermittently unavailable on OpenRouter
+    // (404 "No endpoints found") and slow (~1.5-2s per sentence), so dropped
+    // or late audio reads as "TTS is broken". Default to the paid tier and
+    // override with TTS_MODEL=fish-audio/s2.1-pro:free if you want the free
+    // variant.
+    model: "fish-audio/s2.1-pro",
     format: "mp3",
     chunkSize: 1_000_000,
     voice: "alloy",
@@ -111,6 +121,11 @@ const agent = pipeflow.agent({
 
 const conversation = await pipeflow.conversations.create({
     agents: [agent],
+    // Synthesize sentences in parallel (up to 4 requests in flight) so the
+    // sentences of a multi-sentence reply are ready back-to-back instead of
+    // arriving ~1.5s apart. Raise/lower to taste — free TTS variants may
+    // rate-limit concurrency.
+    maxConcurrentTtsRequests: 4,
 });
 
 await conversation.participate({ userId: USER_ID, aliases: ["you"] });
@@ -122,7 +137,7 @@ await conversation.start();
 // for app visibility (logging, telemetry) — resolve manually only with
 // `autoExecuteTools: false` on the Pipeflow instance or `create()`.
 
-console.log("Pipeflow voice chat — whisper → llama-4-scout → fish s2.1 (free)");
+console.log("Pipeflow voice chat — whisper STT → LLM (native tools) → fish TTS (mp3)");
 
 // Connected browsers, for broadcasting STT clip-energy readings to the slider.
 // Structural type: Bun's ServerWebSocket satisfies it without importing Bun types.

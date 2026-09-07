@@ -58,9 +58,12 @@ Each finalized participant turn is routed:
 - **Streaming**: LLM deltas are buffered into sentences and synthesized to TTS
   immediately; audio chunks reach the application as `audio` events. Synthesis
   runs ahead of playback through a small bounded queue (2 in-flight requests by
-  default), so the first sentence plays first, later sentences overlap it
-  without waiting for the last, and a burst of many sentences never floods the
-  provider with one request per sentence.
+  default, tunable per conversation via `conversations.create({
+  maxConcurrentTtsRequests })`), so the first sentence plays first, later
+  sentences overlap it without waiting for the last, and a burst of many
+  sentences never floods the provider with one request per sentence. With a
+  slow remote TTS (~1.5s+/sentence), raising the bound lets a multi-sentence
+  reply synthesize in parallel and removes the gaps between sentences.
 - **Tools auto-execute** (default): a tool call pauses the generation while the
   framework runs the matching agent tool and feeds the result — or a caught
   error — back into the model loop, exactly like `Agent.run()`. The `tool-call`

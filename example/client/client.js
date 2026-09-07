@@ -112,7 +112,7 @@ ws.onmessage = (event) => {
 
 let audioCtx = null;
 const decodeQueue = [];
-let decoding = false;
+let pumping = false; // a pump loop is draining the queue
 let currentSource = null; // the buffer currently playing (for barge-in)
 let playEpoch = 0; // bumped on stop so in-flight decodes can be dropped
 
@@ -121,6 +121,11 @@ let playEpoch = 0; // bumped on stop so in-flight decodes can be dropped
 // first, never after the last — and an interrupt drops the queue, so it can't
 // delay a barge-in.
 const SENTENCE_GAP_MS = 180;
+// Bounds that keep one wedged frame from stalling the whole queue. A decode
+// or a playing source normally settles in well under these; when one never
+// does (suspended context, missed `onended`, decode hiccup) the frame is
+// skipped so the next one can play instead of the queue waiting forever.
+const DECODE_TIMEOUT_MS = 10_000;
 
 function ensureAudio() {
   // Created/resumed inside a user gesture so autoplay is allowed. The 16 kHz
@@ -147,33 +152,76 @@ function stopPlayback() {
   decodeQueue.length = 0;
 }
 
-function queueAudio(bytes) {
-  if (!audioCtx) return; // no playback context yet (user hasn't clicked)
-  decodeQueue.push(bytes);
-  if (!decoding) void drain();
+/** Resolve `promise` if it settles in time, otherwise reject. */
+function withTimeout(promise, ms) {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`timed out after ${ms}ms`)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
-async function drain() {
-  decoding = true;
-  while (decodeQueue.length > 0) {
-    const bytes = decodeQueue.shift();
-    const arrayBuffer = bytes.buffer.slice(
-      bytes.byteOffset,
-      bytes.byteOffset + bytes.byteLength,
-    );
-    try {
+function queueAudio(bytes) {
+  if (!audioCtx) return; // no playback context yet (user hasn't clicked)
+  if (audioCtx.state === "closed") return;
+  // A backgrounded tab or an audio-device change can leave the context
+  // suspended. A suspended context never advances a playing source, so its
+  // `onended` never fires and the old single-flight drain stalled on that
+  // frame forever — the reply stopped mid-way and only a barge-in (which
+  // stops the source) unstuck it. Resume eagerly and let pump() heal any
+  // stall instead of waiting for the next user input.
+  if (audioCtx.state === "suspended") void audioCtx.resume();
+  decodeQueue.push(bytes);
+  if (!pumping) void pump();
+}
+
+async function pump() {
+  pumping = true;
+  try {
+    while (decodeQueue.length > 0) {
+      const bytes = decodeQueue.shift();
+      const arrayBuffer = bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength,
+      );
       const epoch = playEpoch;
-      const buffer = await audioCtx.decodeAudioData(arrayBuffer);
-      if (epoch !== playEpoch) continue; // stopped while decoding
+
+      let buffer;
+      try {
+        if (audioCtx.state === "suspended") {
+          await audioCtx.resume().catch(() => {});
+        }
+        buffer = await withTimeout(
+          audioCtx.decodeAudioData(arrayBuffer),
+          DECODE_TIMEOUT_MS,
+        );
+      } catch (error) {
+        if (playEpoch !== epoch) continue; // stopped while decoding — drop it
+        addLine("error", `⚠ Audio decode failed: ${error.message}`);
+        continue;
+      }
+      if (playEpoch !== epoch) continue; // stopped while decoding — drop it
+
       await playBuffer(buffer);
-      if (decodeQueue.length > 0) {
+      // The pause between sentences is skippable: it never lands before the
+      // first frame, after the last, or across a stop.
+      if (decodeQueue.length > 0 && playEpoch === epoch) {
         await new Promise((resolve) => setTimeout(resolve, SENTENCE_GAP_MS));
       }
-    } catch (error) {
-      addLine("error", `⚠ Audio decode failed: ${error.message}`);
     }
+  } finally {
+    pumping = false;
+    // Frames queued while the loop was winding down still need a pump.
+    if (decodeQueue.length > 0) void pump();
   }
-  decoding = false;
 }
 
 function playBuffer(buffer) {
@@ -182,11 +230,27 @@ function playBuffer(buffer) {
     currentSource = src;
     src.buffer = buffer;
     src.connect(audioCtx.destination);
-    src.onended = () => {
+    let watchdog = null;
+    let settled = false;
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(watchdog);
       if (currentSource === src) currentSource = null;
       resolve();
     };
+    src.onended = finish;
     src.start();
+    // Watchdog: if `onended` never fires (suspended context, missed event),
+    // stop the source and move on so the queue can't stall on this frame.
+    watchdog = setTimeout(() => {
+      try {
+        src.stop();
+      } catch {
+        // Already ended.
+      }
+      finish();
+    }, Math.max(5_000, buffer.duration * 1000 + 3_000));
   });
 }
 

@@ -14,6 +14,13 @@ export interface CreateConversationOptions {
    * `resolveToolCall()`. Overrides the `Conversations`-level default.
    */
   autoExecuteTools?: boolean;
+  /**
+   * TTS synthesis concurrency (default 2). More in-flight requests let a
+   * multi-sentence reply synthesize in parallel, removing the gaps between
+   * sentences, at the cost of provider concurrency — some free TTS variants
+   * rate-limit concurrent requests.
+   */
+  maxConcurrentTtsRequests?: number;
 }
 
 export interface ConversationsOptions {
@@ -57,6 +64,9 @@ export class Conversations {
       stt: this.stt,
       tts: this.tts,
       autoExecuteTools: options.autoExecuteTools ?? this.autoExecuteTools,
+      ...(options.maxConcurrentTtsRequests !== undefined
+        ? { maxConcurrentTtsRequests: options.maxConcurrentTtsRequests }
+        : {}),
     });
   }
 

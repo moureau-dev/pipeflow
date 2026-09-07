@@ -53,6 +53,14 @@ OpenRouter) instead stream their chain of thought as inline
 of content and surface the inner text on the same `reasoning` field, so
 thoughts are never spoken or written into the reply.
 
+Every network hop that can silently hang is bounded: the LLM adapters abort a
+stream that delivers no data for `idleTimeoutMs` (default 8s), the TTS
+adapters abort a synthesis that delivers no audio for `idleTimeoutMs`
+(default 15s), and the STT adapter aborts a transcription that takes longer
+than `transcriptionTimeoutMs` (default 30s). Without these a wedged provider
+request would hold the pipeline (or the STT session's serialized queue)
+open indefinitely.
+
 ### Tool-call encodings (`toolMode`)
 
 `LLMRequest.toolMode` — or the equivalent adapter option, which a request's

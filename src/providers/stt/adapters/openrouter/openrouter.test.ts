@@ -107,6 +107,39 @@ describe("OpenRouterSTT", () => {
     expect(errors[0]!.message).toContain("500");
   });
 
+  test("a transcription that never responds is aborted by the timeout and the chain advances", async () => {
+    // First request hangs forever (no response, ignores abort); the second
+    // succeeds. Without the timeout the hung request would block the session
+    // chain and the second clip would never transcribe.
+    let n = 0;
+    const { fetch } = makeFakeFetch(async () => {
+      if (n++ === 0) return new Promise<Response>(() => {});
+      return ok("recovered");
+    });
+    const stt = new OpenRouterSTT({
+      apiKey: "test-key",
+      silenceMs: 5,
+      transcriptionTimeoutMs: 25,
+      fetch,
+    });
+    const session = stt.start();
+    const finals: string[] = [];
+    const errors: Error[] = [];
+    session.on("final", (text) => finals.push(text));
+    session.on("error", (error) => errors.push(error));
+
+    session.write(new Uint8Array([1, 2]));
+    await Bun.sleep(60); // first clip flushes, hangs, times out
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toContain("timed out");
+
+    session.write(new Uint8Array([3, 4]));
+    await Bun.sleep(60); // second clip must still transcribe
+
+    expect(finals).toEqual(["recovered"]);
+    expect(errors).toHaveLength(1);
+  });
+
   test("cancel() aborts in-flight requests and drops the result", async () => {
     const { fetch } = makeFakeFetch(async (init) => {
       // Hang until the session is cancelled, then respond late.

@@ -783,6 +783,85 @@ describe("Orchestrator", () => {
     expect(generations[0]?.text).toBe("Partial answer");
   });
 
+  test("retries a transient no-output provider abort once", async () => {
+    // nova-via-Bedrock on OpenRouter intermittently aborts the stream right
+    // after the request starts ("provider aborted the stream"). When nothing
+    // was produced, one silent retry should recover instead of erroring the
+    // turn and forcing the user to re-ask.
+    let calls = 0;
+    const errors: Error[] = [];
+    const harness = await setup({
+      script: async function* () {
+        if (calls++ === 0) {
+          yield {
+            type: "error",
+            error: new Error(
+              "OpenRouter provider aborted the stream: The operation was aborted",
+            ),
+          };
+          return;
+        }
+        yield { type: "delta", content: "It is sunny in Rome!" };
+        yield { type: "done" };
+      },
+    });
+    harness.conversation.on("error", (payload) => errors.push(payload.error));
+
+    await speak(harness, "alice", "Weather in Rome?");
+
+    expect(calls).toBe(2); // one retry
+    expect(errors).toHaveLength(0);
+    const [generation] = await harness.persistence.listGenerations("conv-1");
+    expect(generation!.status).toBe("completed");
+    expect(generation!.text).toBe("It is sunny in Rome!");
+  });
+
+  test("a persistent transient abort fails after the bounded retry", async () => {
+    let calls = 0;
+    const errors: Error[] = [];
+    const harness = await setup({
+      script: async function* () {
+        calls++;
+        yield {
+          type: "error",
+          error: new Error(
+            "OpenRouter provider aborted the stream: The operation was aborted",
+          ),
+        };
+      },
+    });
+    harness.conversation.on("error", (payload) => errors.push(payload.error));
+
+    await speak(harness, "alice", "Weather in Rome?");
+
+    expect(calls).toBe(2); // original + one retry, then give up
+    expect(errors).toHaveLength(1);
+    expect(errors[0]!.message).toMatch(/aborted the stream/);
+    const [generation] = await harness.persistence.listGenerations("conv-1");
+    expect(generation!.status).toBe("completed");
+    expect(generation!.text).toBe("");
+  });
+
+  test("does not retry a failure that produced partial output", async () => {
+    let calls = 0;
+    const harness = await setup({
+      script: async function* () {
+        calls++;
+        yield { type: "delta", content: "Let me check." };
+        throw new Error("OpenRouter provider aborted the stream: The operation was aborted");
+      },
+    });
+    const errors: Error[] = [];
+    harness.conversation.on("error", (payload) => errors.push(payload.error));
+
+    await speak(harness, "alice", "Weather in Rome?");
+
+    expect(calls).toBe(1); // partial text was already streamed — no retry
+    expect(errors).toHaveLength(1);
+    const [generation] = await harness.persistence.listGenerations("conv-1");
+    expect(generation!.text).toBe("Let me check.");
+  });
+
   test("a coordination LLM failure emits an error and finalizes the generation", async () => {
     const harness = await setupRoster({
       coordinatorScript: async function* () {

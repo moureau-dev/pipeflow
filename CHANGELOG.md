@@ -63,6 +63,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Transient no-output LLM failures are retried once** — nova models served
+  from Bedrock via OpenRouter intermittently abort the chat stream right
+  after it starts (the client saw "OpenRouter provider aborted the stream:
+  The operation was aborted"), killing the whole generation and forcing the
+  user to re-ask. When a generation fails *before any text was produced and
+  no tool executed*, the orchestrator retries it once with a fresh request
+  (mid-stream aborts, idle timeouts, 429/5xx). Partial output or executed
+  tools are never retried — that would double-speak or re-run side effects.
+
+- **TTS and STT requests can no longer hang the pipeline indefinitely** — a
+  provider connection that never responded (or went silent mid-stream) held
+  the pipeline open forever: a stuck TTS synthesis wedged the speech delivery
+  chain (the reply waited for the next user input, whose barge-in aborted it),
+  and a stuck transcription blocked the STT session's serialized queue for the
+  rest of the server's life. The OpenRouter TTS adapter now aborts a synthesis
+  that delivers no audio for `idleTimeoutMs` (default 15s, option on the
+  adapter), and the OpenRouter STT adapter aborts a transcription that takes
+  longer than `transcriptionTimeoutMs` (default 30s) — both surface a clear
+  error and the pipeline moves on.
+
+- **TTS concurrency is tunable and the example stops defaulting to a flaky
+  model** — remote TTS takes ~1.3-2s per sentence request, so with the old
+  2-in-flight window the sentences of a reply arrived ~1s apart (audible gaps)
+  and the free fish variant OpenRouter served was intermittently unavailable
+  (404 "No endpoints found" → dropped sentence audio). Conversations now accept
+  `maxConcurrentTtsRequests` (threaded to the speech pipeline, default 2) so
+  sentences synthesize in parallel, and the example defaults to the steady
+  paid `fish-audio/s2.1-pro` (`TTS_MODEL=...:free` to opt back into the free
+  variant).
+
 - **Inline `<thinking>` tags no longer leak into the reply** — reasoning
   models whose serving layer lacks a native reasoning channel (e.g.
   `amazon/nova-micro` via OpenRouter in a thinking mode) stream their chain

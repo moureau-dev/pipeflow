@@ -66,6 +66,14 @@ export interface OpenRouterSTTOptions extends STTOptions {
    */
   onClipEnergy?: (rms: number, transcribed: boolean) => void;
   /**
+   * Abort a transcription request that produces no response within this
+   * long (default 30000ms). Transcriptions are serialized on one session
+   * chain, so a hung provider request would otherwise block every later
+   * clip (each turn silently waits) until the server restarts. Raise it for
+   * very long clips or slow providers.
+   */
+  transcriptionTimeoutMs?: number;
+  /**
    * Sampling temperature (0–1) for transcription. Lower is more
    * deterministic; whisper's API default is already 0, so this is rarely the
    * lever for hallucinations.
@@ -172,6 +180,7 @@ export class OpenRouterSession implements STTSession {
   private readonly filterHallucinations: boolean;
   private readonly fillerPhrases: string[] | undefined;
   private readonly onClipEnergy: ((rms: number, transcribed: boolean) => void) | undefined;
+  private readonly transcriptionTimeoutMs: number;
   private readonly temperature: number | undefined;
   private readonly providerOptions: Record<string, unknown> | undefined;
   private readonly fetchImpl: FetchLike;
@@ -204,6 +213,7 @@ export class OpenRouterSession implements STTSession {
     this.filterHallucinations = options.filterHallucinations ?? true;
     this.fillerPhrases = options.fillerPhrases;
     this.onClipEnergy = options.onClipEnergy;
+    this.transcriptionTimeoutMs = options.transcriptionTimeoutMs ?? 30_000;
     this.temperature = options.temperature;
     this.providerOptions = options.providerOptions;
     this.fetchImpl = options.fetch ?? fetch;
@@ -303,27 +313,44 @@ export class OpenRouterSession implements STTSession {
     }
     const controller = new AbortController();
     this.controllers.add(controller);
+    // A transcription request that never responds would otherwise block this
+    // session's serialized chain forever — every later clip silently waits.
+    // Bound it: on timeout the request is aborted and surfaces as an error,
+    // and the chain moves on to the next clip.
+    let timedOut = false;
     try {
-      const raw = await transcribeClip({
-        apiKey: this.apiKey,
-        baseUrl: this.baseUrl,
-        model: this.model,
-        language: this.language,
-        sampleRate: this.sampleRate,
-        audioFormat: this.audioFormat,
-        temperature: this.temperature,
-        providerOptions: this.providerOptions,
-        audio,
-        signal: controller.signal,
-        fetchImpl: this.fetchImpl,
-      });
+      const raw = await withTimeout(
+        transcribeClip({
+          apiKey: this.apiKey,
+          baseUrl: this.baseUrl,
+          model: this.model,
+          language: this.language,
+          sampleRate: this.sampleRate,
+          audioFormat: this.audioFormat,
+          temperature: this.temperature,
+          providerOptions: this.providerOptions,
+          audio,
+          signal: controller.signal,
+          fetchImpl: this.fetchImpl,
+        }),
+        this.transcriptionTimeoutMs,
+        () => {
+          timedOut = true;
+          controller.abort();
+        },
+      );
       const text = this.filterHallucinations
         ? cleanTranscript(raw, this.fillerPhrases)
         : raw;
       if (!this.aborted && text) this.emit("final", text);
     } catch (error) {
       if (!this.aborted) {
-        this.emit("error", error instanceof Error ? error : new Error(String(error)));
+        const message = timedOut
+          ? `OpenRouter transcription timed out after ${this.transcriptionTimeoutMs}ms`
+          : error instanceof Error
+            ? error.message
+            : String(error);
+        this.emit("error", new Error(message));
       }
     } finally {
       this.controllers.delete(controller);
@@ -409,6 +436,34 @@ async function transcribeClip(options: TranscribeClipOptions): Promise<string> {
   }
   const data = (await response.json()) as { text?: string };
   return (data.text ?? "").trim();
+}
+
+/**
+ * Race `promise` against a timeout: reject after `ms` and fire `onTimeout`
+ * (which should abort the underlying request) so the hanging operation is
+ * released rather than left pending forever.
+ */
+function withTimeout<T>(
+  promise: Promise<T>,
+  ms: number,
+  onTimeout: () => void,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      onTimeout();
+      reject(new Error(`timed out after ${ms}ms`));
+    }, ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
 }
 
 /**

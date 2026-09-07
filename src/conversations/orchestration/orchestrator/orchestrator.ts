@@ -18,6 +18,24 @@ import { SpeechPipeline } from "./speech/speech";
 import { ToolCallManager } from "./tools/tools";
 import { CoordinationRunner } from "./coordination-runner/coordination-runner";
 
+/**
+ * Extra attempts after a transient provider failure that produced no output.
+ * Kept tiny: each attempt is a fresh LLM request (latency + cost), and the
+ * failure is usually a one-off upstream abort.
+ */
+const MAX_TRANSIENT_GENERATION_RETRIES = 1;
+
+/**
+ * True for provider failures worth one silent retry: mid-stream aborts (the
+ * Bedrock-via-OpenRouter failure nova models show as "provider aborted the
+ * stream"), idle timeouts, and HTTP 429/5xx. Real failures (400, auth, bad
+ * requests) are not retried.
+ */
+function isTransientProviderError(error: unknown): boolean {
+  if (!(error instanceof Error)) return false;
+  return /aborted the stream|timed out|idle timeout|\b(429|50[0-9])\b/i.test(error.message);
+}
+
 export interface OrchestratorOptions {
   conversation: Conversation;
   /**
@@ -59,12 +77,20 @@ export interface OrchestratorOptions {
   temperature?: number;
   maxTokens?: number;
   /**
-   * Bounds how much conversation history each LLM request carries (default
+   * How much conversation history each LLM request carries (default
    * `{ maxTurns: 5, maxChars: 4000 }` — provider TTFT grows with input size,
    * and a bounded window keeps requests in the fast regime). Pass `false` to
    * always send the full history.
    */
   historyWindow?: HistoryWindow | false;
+  /**
+   * How many TTS synthesis requests may be in flight at once (default 2).
+   * More lets the sentences of a multi-sentence reply synthesize in parallel
+   * (kills the gaps between them) at the cost of provider concurrency — some
+   * free TTS variants rate-limit concurrent requests. Passed through to the
+   * speech pipeline; see `SpeechPipelineOptions.maxConcurrentRequests`.
+   */
+  maxConcurrentTtsRequests?: number;
 }
 
 interface SttSessionEntry {
@@ -146,6 +172,9 @@ export class Orchestrator {
       tts: this.tts,
       conversation: this.conversation,
       isCurrent: (epoch) => this.started && epoch === this.epoch,
+      ...(options.maxConcurrentTtsRequests !== undefined
+        ? { maxConcurrentRequests: options.maxConcurrentTtsRequests }
+        : {}),
     });
     // The registry spans every agent's tools, so top-level generations and
     // delegated sub-generations both auto-execute the tools the routed agent
@@ -440,23 +469,39 @@ export class Orchestrator {
     }
     messages.push(...this.history.windowed(this.historyWindow));
 
-    const outcome = await this.generation.run({
-      agentName: agent.name,
-      llm,
-      messages,
-      tools: definitions,
-      temperature: this.temperature,
-      maxTokens: this.maxTokens,
-      maxToolIterations: this.maxToolIterations,
-      isCurrent: () => this.epoch === epoch,
-      // With one agent every assistant turn is the same speaker, so the
-      // per-agent `name` fields are redundant — and some providers render
-      // them as role headers ("Scout:") that weaker models imitate by
-      // prefixing every reply with the agent's name.
-      agentNames: this.agents.length > 1,
-      onDelta: (delta) => this.speech.feed(delta, epoch),
-      resolveToolCalls: (calls) => this.tools.resolveCalls(calls),
-    });
+    // Run the generation, retrying transient provider failures that happen
+    // before anything was produced (e.g. the Bedrock-via-OpenRouter mid-stream
+    // abort nova models show as "provider aborted the stream"). Retrying is
+    // safe only when nothing was streamed and no tool ran — otherwise the
+    // user would hear the partial reply twice or a tool would re-execute.
+    let outcome: Awaited<ReturnType<GenerationRunner["run"]>>;
+    for (let attempt = 0; ; attempt++) {
+      outcome = await this.generation.run({
+        agentName: agent.name,
+        llm,
+        messages,
+        tools: definitions,
+        temperature: this.temperature,
+        maxTokens: this.maxTokens,
+        maxToolIterations: this.maxToolIterations,
+        isCurrent: () => this.epoch === epoch,
+        // With one agent every assistant turn is the same speaker, so the
+        // per-agent `name` fields are redundant — and some providers render
+        // them as role headers ("Scout:") that weaker models imitate by
+        // prefixing every reply with the agent's name.
+        agentNames: this.agents.length > 1,
+        onDelta: (delta) => this.speech.feed(delta, epoch),
+        resolveToolCalls: (calls) => this.tools.resolveCalls(calls),
+      });
+      if (this.epoch !== epoch) return;
+      const retryable =
+        attempt < MAX_TRANSIENT_GENERATION_RETRIES &&
+        outcome.status === "error" &&
+        outcome.text.length === 0 &&
+        (outcome.toolRounds ?? 0) === 0 &&
+        isTransientProviderError(outcome.error);
+      if (!retryable) break;
+    }
 
     // A stale run (interrupt/stop) is discarded entirely — the conversation
     // already marked the generation cancelled.

@@ -54,6 +54,13 @@ export interface ConversationOptions {
    * calls from your own backend via `resolveToolCall()`.
    */
   autoExecuteTools?: boolean;
+  /**
+   * TTS synthesis concurrency (default 2): more in-flight requests let a
+   * multi-sentence reply synthesize in parallel, removing the gaps between
+   * sentences, at the cost of provider concurrency. See
+   * `SpeechPipelineOptions.maxConcurrentRequests`.
+   */
+  maxConcurrentTtsRequests?: number;
 }
 
 export interface ConversationEvents {
@@ -118,6 +125,7 @@ export class Conversation {
   private readonly stt: STT | undefined;
   private readonly tts: TTS | undefined;
   private readonly autoExecuteTools: boolean;
+  private readonly maxConcurrentTtsRequests: number | undefined;
   private readonly listeners = new Map<
     keyof ConversationEvents,
     Set<(payload: never) => void>
@@ -133,6 +141,7 @@ export class Conversation {
     this.stt = options.stt;
     this.tts = options.tts;
     this.autoExecuteTools = options.autoExecuteTools ?? true;
+    this.maxConcurrentTtsRequests = options.maxConcurrentTtsRequests;
     this.transcription = new Transcription(this.id);
     this.state = createConversationState();
   }
@@ -503,6 +512,9 @@ export class Conversation {
           agents: [...this.agents],
           tts: this.tts,
           autoExecuteTools: this.autoExecuteTools,
+          ...(this.maxConcurrentTtsRequests !== undefined
+            ? { maxConcurrentTtsRequests: this.maxConcurrentTtsRequests }
+            : {}),
         })
       : new Orchestrator(common);
   }

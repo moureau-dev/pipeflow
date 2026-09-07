@@ -141,6 +141,36 @@ describe("OpenRouterTTS", () => {
     await expect(gen.next()).rejects.toThrow(/aborted/);
   });
 
+  test("a synthesis that goes silent is aborted by the idle timeout", async () => {
+    const body = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new Uint8Array([1, 2, 3, 4]));
+        // One chunk, then silence forever — the provider connection hangs.
+      },
+    });
+    const { fetch } = makeFakeFetch(async () => new Response(body, { status: 200 }));
+    const tts = new OpenRouterTTS({ apiKey: "test-key", chunkSize: 2, idleTimeoutMs: 40, fetch });
+
+    const gen = tts.stream({ text: "hi" });
+    const first = await gen.next();
+    expect([...(first.value as Uint8Array)]).toEqual([1, 2]);
+    const second = await gen.next();
+    expect([...(second.value as Uint8Array)]).toEqual([3, 4]);
+
+    // Without the watchdog this next() would hang forever (the stream never
+    // closes), wedging the speech pipeline's delivery chain.
+    await expect(gen.next()).rejects.toThrow(/no audio for 40ms/);
+  });
+
+  test("a request that never responds is aborted by the idle timeout", async () => {
+    const { fetch } = makeFakeFetch(
+      async () => new Promise<Response>(() => {}), // fetch never resolves
+    );
+    const tts = new OpenRouterTTS({ apiKey: "test-key", idleTimeoutMs: 40, fetch });
+
+    await expect(collect(tts, "hi")).rejects.toThrow(/no audio for 40ms/);
+  });
+
   test("concurrent streams do not cancel each other", async () => {
     const signals: AbortSignal[] = [];
     const { fetch } = makeFakeFetch(async (init) => {

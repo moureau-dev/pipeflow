@@ -46,6 +46,13 @@ export interface GenerationOutcome {
   status: GenerationStatus;
   /** The provider error, when `status` is "error". */
   error?: unknown;
+  /**
+   * How many tool rounds were resolved before the run ended (only present
+   * when at least one). Lets callers retry a no-output failure safely:
+   * re-running a generation whose tools already executed would repeat their
+   * side effects.
+   */
+  toolRounds?: number;
 }
 
 /**
@@ -74,6 +81,7 @@ export class GenerationRunner {
     } = request;
 
     let text = "";
+    let toolRounds = 0;
 
     try {
       for (let iteration = 0; iteration < maxToolIterations; iteration++) {
@@ -110,6 +118,7 @@ export class GenerationRunner {
         if (!isCurrent()) return { text, status: "interrupted" };
 
         if (toolCalls.length > 0) {
+          toolRounds++;
           // Pause the response: hand the calls to the application, then
           // resume once they are resolved.
           messages.push({ role: "assistant", name: agentName, content: text, toolCalls });
@@ -133,7 +142,12 @@ export class GenerationRunner {
 
       return { text, status: "done" };
     } catch (error) {
-      return { text, status: "error", error };
+      return {
+        text,
+        status: "error",
+        error,
+        ...(toolRounds > 0 ? { toolRounds } : {}),
+      };
     }
   }
 }

@@ -32,11 +32,11 @@ interface Transport {
   two connected ends; messages sent on one end are delivered to the peer's
   listeners.
 
-## Server transport (Bun-agnostic)
+## Server transport abstraction
 
-For server deployments, Pipeflow provides a **runtime-independent** server
-abstraction. You bring your own WebSocket server (Bun, Node `ws`, socket.io)
-via the `ServerAdapter` interface:
+Pipeflow provides a **runtime-independent** server abstraction via the
+`ServerAdapter` interface. You bring your own WebSocket server
+(Bun, Node `ws`, socket.io) and route clients to conversations yourself:
 
 ```ts
 import type { ServerAdapter, ServerClient } from "@moureau/pipeflow/transport";
@@ -49,24 +49,18 @@ interface ServerAdapter {
 ```
 
 A `ServerClient` has `send()`, `sendBinary()`, `close()`, `onMessage()`, and
-`onClose()` — everything needed to bridge conversation events to a remote
-client.
+`onClose()`.
 
-### Adapters
+### Building your own server
 
-- **Bun** (`BunServerAdapter`) — wraps `Bun.serve()` with WebSocket upgrade.
-- **ConversationWebSocketServer** — the high-level bridge that connects a
-  Pipeflow `Conversation` to any `ServerAdapter`. It wires conversation events
-  (`turn`, `audio`, `transcript`, `interrupt`, etc.) to connected clients and
-  forwards incoming messages (`text-in`, `interrupt`, `tool-result`, audio
-  binary) back to the conversation.
+Since `ServerAdapter` is runtime-agnostic, you own the routing and event
+filtering. For example, a Bun server routing by conversation id:
 
 ```ts
-import { ConversationWebSocketServer, BunServerAdapter } from "@moureau/pipeflow/transport";
+const conversations = new Map<string, Conversation>();
 
-const adapter = new BunServerAdapter({ port: 3000 });
-const server = new ConversationWebSocketServer({ conversation, adapter });
-await server.start();
+// For each client, subscribe to the conversation events they care about.
+// The ServerClient abstraction lets you do this with any transport.
 ```
 
 ### Rolling your own adapter

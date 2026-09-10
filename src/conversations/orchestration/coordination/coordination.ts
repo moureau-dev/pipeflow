@@ -23,8 +23,34 @@ export interface DelegationResult {
   error?: string;
 }
 
+/**
+ * One step in a plan: optionally an agent to run (or pure LLM when omitted),
+ * with a unique id for dependency references.
+ */
+export interface PlanStep {
+  id: string;
+  /** Agent name or alias from the roster. Omit for a pure-LLM step. */
+  agent?: string;
+  prompt: string;
+  /** Ids of steps in the same plan that must finish first. */
+  dependsOn?: string[];
+}
+
+/**
+ * A structured plan the coordinator outputs: run these agent steps in
+ * dependency order, optionally compose a final answer from their results.
+ */
+export interface Plan {
+  steps: PlanStep[];
+  /** Instruction for the final composition step, seeded with all step results. */
+  composition?: string;
+  /** Narration spoken while the plan is being prepared. */
+  narration?: string;
+}
+
 /** What a coordination's LLM may decide to do next. */
 export type DelegateAction =
+  | { action: "plan"; steps: PlanStep[]; composition?: string }
   | { action: "agents"; tasks: DelegatedTask[] }
   | { action: "coordination"; coordination: string; input?: unknown }
   | { action: "clarify"; missing: string[] }
@@ -177,9 +203,8 @@ export class CoordinationBudgetExceeded extends Error {
 // ---------------------------------------------------------------------------
 
 const DELEGATE_DESCRIPTION =
-  "Decide what should happen next in order to produce the desired result. " +
-  "You may run one or more agents (each with a self-contained prompt), pass the work to " +
-  "another coordination, ask the user for missing information (batched into one call), or " +
+  "Plan the work: output one or more agent steps to run (in parallel where independent), " +
+  "pass the work to another coordination, ask the user for missing information (batched into one call), or " +
   "complete with the final spoken answer. Only ever take one action per call.";
 
 /** Non-empty zod enum, or a plain string when there are no targets. */
@@ -199,16 +224,29 @@ function delegateActionSchema(
 ): z.ZodType<DelegateAction> {
   const agentTargets = agents.map((agent) => [agent.name, ...agent.aliases]).flat();
   const coordinationTargets = coordinations.map((coordination) => coordination.name);
+  const planStepSchema = z.object({
+    id: z.string().trim().min(1, "a step id is required").describe("Unique id for this step, referenced by dependsOn."),
+    agent: targetsEnum(agentTargets).describe("Agent name or alias from the roster. Omit for a pure-LLM step.").optional(),
+    prompt: z.string().trim().min(1, "a prompt is required").describe("Self-contained instruction for that step."),
+    dependsOn: z.array(z.string().trim().min(1, "a step id is required")).describe("Ids of steps that must finish first.").optional(),
+  });
+  const taskSchema = z.object({
+    agent: targetsEnum(agentTargets).describe("Agent name or alias from the roster."),
+    prompt: z.string().trim().min(1, "a prompt is required").describe("Self-contained instruction for that agent."),
+  });
   return z.discriminatedUnion("action", [
+    z.object({
+      action: z.literal("plan"),
+      steps: z
+        .array(planStepSchema)
+        .describe("Agent steps to execute in dependency order.")
+        .min(1, "at least one step is required"),
+      composition: z.string().trim().min(1, "a composition prompt is required").describe("Instruction for composing the final answer from step results.").optional(),
+    }),
     z.object({
       action: z.literal("agents"),
       tasks: z
-        .array(
-          z.object({
-            agent: targetsEnum(agentTargets).describe("Agent name or alias from the roster."),
-            prompt: z.string().trim().min(1, "a prompt is required").describe("Self-contained instruction for that agent."),
-          }),
-        )
+        .array(taskSchema)
         .describe("Agents to run in parallel.")
         .min(1, "at least one task is required"),
     }),
@@ -257,17 +295,32 @@ export function delegateToolDefinition(
 ): LLMToolDefinition {
   const agentTargets = agents.map((agent) => [agent.name, ...agent.aliases]).flat();
   const coordinationTargets = coordinations.map((coordination) => coordination.name);
+  const planStepSchema = z.object({
+    id: z.string().trim().min(1, "a step id is required").describe("Unique id for this step, referenced by dependsOn."),
+    agent: targetsEnum(agentTargets).describe("Agent name or alias from the roster. Omit for a pure-LLM step.").optional(),
+    prompt: z.string().trim().min(1, "a prompt is required").describe("Self-contained instruction for that step."),
+    dependsOn: z.array(z.string().trim().min(1, "a step id is required")).describe("Ids of steps that must finish first.").optional(),
+  });
+  const taskSchema = z.object({
+    agent: targetsEnum(agentTargets).describe("Agent name or alias from the roster."),
+    prompt: z.string().trim().min(1, "a prompt is required").describe("Self-contained instruction for that agent."),
+  });
   const parameters = z.object({
     action: z
-      .enum(["agents", "coordination", "clarify", "user", "complete"])
+      .enum(["plan", "agents", "coordination", "clarify", "user", "complete"])
       .describe("What to do next."),
+    steps: z
+      .array(planStepSchema)
+      .describe("Agent steps to execute in dependency order (action 'plan').")
+      .optional(),
+    composition: z
+      .string()
+      .trim()
+      .min(1, "a composition prompt is required")
+      .describe("Instruction for composing the final answer from step results (action 'plan').")
+      .optional(),
     tasks: z
-      .array(
-        z.object({
-          agent: targetsEnum(agentTargets).describe("Agent name or alias from the roster."),
-          prompt: z.string().trim().min(1, "a prompt is required").describe("Self-contained instruction for that agent."),
-        }),
-      )
+      .array(taskSchema)
       .describe("Agents to run in parallel (action 'agents').")
       .optional(),
     coordination: targetsEnum(coordinationTargets)
@@ -499,15 +552,25 @@ export class Coordination {
             continue;
           }
           switch (action.action) {
+            case "plan":
+              this.runtime.flushSpeech();
+              return {
+                plan: action.steps,
+                narration: state.narration,
+                ...(action.composition !== undefined ? { composition: action.composition } : {}),
+              };
             case "agents": {
-              const results = await this.runtime.delegateAgentTasks(action.tasks);
-              state.messages.push({
-                role: "tool",
-                toolCallId: call.id,
-                name: "delegate",
-                content: JSON.stringify(results),
-              });
-              break;
+              // Simpler delegation syntax: convert tasks to plan steps so the
+              // same deterministic executor handles both paths.
+              this.runtime.flushSpeech();
+              return {
+                plan: action.tasks.map((task, i) => ({
+                  id: `step${i}`,
+                  agent: task.agent,
+                  prompt: task.prompt,
+                })),
+                narration: state.narration,
+              };
             }
             case "coordination": {
               const target = this.runtime.coordinations.find(

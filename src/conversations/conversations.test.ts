@@ -286,7 +286,13 @@ describe("Conversations", () => {
     const stt = new FakeSTT();
     const tts = new FakeTTS();
     const coordinatorLlm = new FakeLLM(async function* (request) {
-      if (request.messages.at(-1)?.role === "tool") {
+      const last = request.messages.at(-1)!;
+      if (last.role === "user" && String(last.content).includes("results to compose")) {
+        yield { type: "delta", content: "Done: flight found and calendar checked." };
+        yield { type: "done" };
+        return;
+      }
+      if (last.role === "tool") {
         yield { type: "delta", content: "Done: flight found and calendar checked." };
         yield { type: "done" };
         return;
@@ -296,8 +302,9 @@ describe("Conversations", () => {
         id: "call_1",
         name: "delegate",
         arguments: JSON.stringify({
-          action: "agents",
-          tasks: [{ agent: "Calendar Agent", prompt: "Check Tuesday afternoon." }],
+          action: "plan",
+          steps: [{ id: "s1", agent: "Calendar Agent", prompt: "Check Tuesday afternoon." }],
+          composition: "Compose a concise answer from the specialist's results.",
         }),
       };
       yield { type: "done" };
@@ -322,7 +329,7 @@ describe("Conversations", () => {
     await waitFor(() => calendarLlm.requests.length >= 1);
     await waitFor(async () => (await api.transcript(conversation.id)).length >= 3);
 
-    // The coordinator dispatched, the specialist ran on its own LLM, and
+    // The coordinator planned, the specialist ran on its own LLM, and
     // both turns and the merged answer landed in the transcript.
     expect(coordinatorLlm.requests).toHaveLength(2);
     expect(calendarLlm.requests).toHaveLength(1);

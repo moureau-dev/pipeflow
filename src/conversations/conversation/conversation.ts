@@ -15,6 +15,7 @@ import type {
   Turn,
   UserId,
 } from "../types";
+import type { PlanStep } from "../orchestration/coordination/coordination";
 import { createConversationState } from "../types";
 import {
   Transcription,
@@ -110,6 +111,12 @@ export interface ConversationEvents {
     text: string;
     agentName?: string;
   };
+  /** A delegated specialist's output, streamed as its LLM produces it. */
+  "agent-delta": {
+    conversationId: ConversationId;
+    agent: string;
+    text: string;
+  };
   /** The current (top-level) generation finished generating. */
   "generation-complete": {
     conversationId: ConversationId;
@@ -128,6 +135,16 @@ export interface ConversationEvents {
   interrupt: { conversationId: ConversationId };
   /** A provider failure (STT, LLM, or TTS). */
   error: { conversationId: ConversationId; error: Error };
+  /** The coordination produced a structured plan for execution. */
+  plan: { conversationId: ConversationId; steps: PlanStep[] };
+  /** A plan step started or completed execution. */
+  "plan-step": {
+    conversationId: ConversationId;
+    step: PlanStep;
+    status: "started" | "completed" | "failed";
+    /** The step's output text, only on completed/failed. */
+    text?: string;
+  };
   state: { conversationId: ConversationId; state: ConversationState };
 }
 

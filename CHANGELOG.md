@@ -30,6 +30,61 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Plan-based coordination** — the built-in `understand` coordination now
+  outputs a structured plan (`action: "plan"`) with typed steps instead of a
+  reactive delegation loop. Each step has an `id`, optional `agent`, `prompt`,
+  and `dependsOn` (string ids). Independent steps run in parallel; dependent
+  steps resolve in order and receive their dependency outputs injected into the
+  prompt. This eliminates infinite re-delegation loops and makes multi-agent
+  execution deterministic, observable, and bounded to one plan round.
+- **Plan composition** — plans carry an optional `composition` prompt. After all
+  steps resolve, the coordinator's LLM synthesizes a coherent final answer from
+  every step's output, streamed through `text-delta` and TTS. Falls back to
+  concatenation when composition is absent.
+- **`"plan"` event** — fires on the conversation when the coordinator produces a
+  plan, giving the application visibility into the execution strategy before it
+  runs.
+- **`"plan-step"` event** — fires `started`/`completed`/`failed` per step with
+  the step's output text, for progress UIs and status tracking.
+- **`"agent-delta"` event** — a delegated specialist's LLM output streamed in
+  realtime, tagged with the agent name. Distinct from `text-delta` (the top-level
+  reply): this is live progress for UX observation and is not coalesced into the
+  conversation's reply object.
+- **`finalizeAfterToolRound` option** — sub-generations skip the redundant answer
+  round after tool execution, synthesizing output directly from tool results.
+  Cuts wall time ~30% and removes the post-tool LLM round trip.
+- **`agents` action support** — the flattened `delegate` tool still accepts the
+  simpler `action: "agents"` / `tasks` syntax alongside `plan`. Models that can't
+  handle the full plan schema (e.g. nova-micro) use the simpler form, while
+  `plan` supports dependencies and composition. Both route through the same
+  deterministic executor.
+- **Delegated sub-generation token cap** — sub-generations within a plan step
+  bound output to 512 tokens and limit tool iterations to 3 (was 10), preventing
+  runaway loops and long rambling.
+- **`retryDirectAnswer` option** — on `Conversation.create()` / `Pipeflow`,
+  when a multi-agent coordination answers directly without planning, the
+  framework retries once. Off by default: a legitimate direct answer ("hello")
+  cannot be reliably distinguished from a model that ignored planning.
+
+### Changed
+
+- **`understand` prompt tightened** — demotes `complete` to "use ONLY for simple
+  requests that need no agent work" and makes `plan` the default action.
+  Removes the "do not narrate your internal reasoning" constraint in favor of
+  "narrate your thinking briefly, then take exactly one action."
+- **`delegate` tool description** — updated to emphasize planning as the
+  primary action, removing the "decide what should happen next" framing that
+  encouraged the reactive loop.
+
+### Fixed
+
+- **Sub-generation text deltas no longer pollute the conversation stream** —
+  specialist output now streams through `agent-delta` instead of `text-delta`,
+  so the top-level reply object (coalesced by `ConversationStream`) is not
+  fragmented by intermediary agent narration.
+
 ## [0.0.3] - 2026-09-07
 
 ### Added

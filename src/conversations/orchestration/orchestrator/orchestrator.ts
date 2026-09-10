@@ -78,6 +78,11 @@ export interface OrchestratorOptions {
   temperature?: number;
   maxTokens?: number;
   /**
+   * When true, a multi-agent coordination that answers directly without
+   * planning is retried once. Defaults to false.
+   */
+  retryDirectAnswer?: boolean;
+  /**
    * How much conversation history each LLM request carries (default
    * `{ maxTurns: 5, maxChars: 4000 }` — provider TTFT grows with input size,
    * and a bounded window keeps requests in the fast regime). Pass `false` to
@@ -207,6 +212,7 @@ export class Orchestrator {
       currentEpoch: () => this.epoch,
       isCurrent: (epoch) => this.started && epoch === this.epoch,
       currentSignal: () => this.currentAbortController?.signal,
+      retryDirectAnswer: options.retryDirectAnswer,
       logger: this.logger,
     });
     this.coordination.register(options.coordinations ?? {}, agents);

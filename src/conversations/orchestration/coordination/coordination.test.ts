@@ -118,13 +118,14 @@ describe("delegate tool contract", () => {
     expect(params.type).toBe("object");
     expect(params.required).toEqual(["action"]);
     expect(params.properties.action.enum).toEqual([
+      "plan",
       "agents",
       "coordination",
       "clarify",
       "user",
       "complete",
     ]);
-    expect(params.properties.tasks.items.properties.agent.enum).toEqual([
+    expect(params.properties.steps.items.properties.agent.enum).toEqual([
       "Travel Agent",
       "travel",
       "Helper",
@@ -136,7 +137,7 @@ describe("delegate tool contract", () => {
   test("falls back to plain strings when there are no targets", () => {
     const definition = delegateToolDefinition([], []);
     const properties = (definition.parameters as any).properties;
-    expect(properties.tasks.items.properties.agent.enum).toBeUndefined();
+    expect(properties.steps.items.properties.agent.enum).toBeUndefined();
     expect(properties.coordination.enum).toBeUndefined();
   });
 
@@ -146,15 +147,19 @@ describe("delegate tool contract", () => {
     expect(
       parseDelegateAction(
         JSON.stringify({
-          action: "agents",
-          tasks: [{ agent: "Travel Agent", prompt: "Find flights." }],
+          action: "plan",
+          steps: [
+            { id: "flights", agent: "Travel Agent", prompt: "Find flights." },
+          ],
         }),
         agents,
         coordinations,
       ),
     ).toEqual({
-      action: "agents",
-      tasks: [{ agent: "Travel Agent", prompt: "Find flights." }],
+      action: "plan",
+      steps: [
+        { id: "flights", agent: "Travel Agent", prompt: "Find flights." },
+      ],
     });
     expect(
       parseDelegateAction(
@@ -187,6 +192,28 @@ describe("delegate tool contract", () => {
         coordinations,
       ),
     ).toEqual({ action: "user", question: "Which city?" });
+    // Plan produces a structured plan with steps.
+    expect(
+      parseDelegateAction(
+        JSON.stringify({
+          action: "plan",
+          steps: [
+            { id: "flights", agent: "Travel Agent", prompt: "Find flights." },
+            { id: "summary", prompt: "Summarize the results.", dependsOn: ["flights"] },
+            { id: "final", agent: "Helper", prompt: "Wrap up.", dependsOn: ["summary"] },
+          ],
+        }),
+        agents,
+        coordinations,
+      ),
+    ).toEqual({
+      action: "plan",
+      steps: [
+        { id: "flights", agent: "Travel Agent", prompt: "Find flights." },
+        { id: "summary", prompt: "Summarize the results.", dependsOn: ["flights"] },
+        { id: "final", agent: "Helper", prompt: "Wrap up.", dependsOn: ["summary"] },
+      ],
+    });
     // Clarify batches the missing details; entries are trimmed.
     expect(
       parseDelegateAction(
@@ -212,10 +239,9 @@ describe("delegate tool contract", () => {
     const invalid = [
       "{not json",
       JSON.stringify({ action: "nope" }),
-      JSON.stringify({ action: "agents", tasks: [] }),
-      JSON.stringify({ action: "agents", tasks: [{ agent: "Travel Agent" }] }),
-      JSON.stringify({ action: "agents", tasks: [{ prompt: "No agent." }] }),
-      JSON.stringify({ action: "agents", tasks: [{ agent: "Ghost", prompt: "x" }] }),
+      JSON.stringify({ action: "plan", steps: [] }),
+      JSON.stringify({ action: "plan", steps: [{ id: "a", agent: "Travel Agent" }] }),
+      JSON.stringify({ action: "plan", steps: [{ agent: "Travel Agent", prompt: "x" }] }),
       JSON.stringify({ action: "user", question: "   " }),
       JSON.stringify({ action: "complete", output: "" }),
       JSON.stringify({ action: "coordination" }),
@@ -226,7 +252,7 @@ describe("delegate tool contract", () => {
     // The unknown agent reports the roster expectation.
     expect(() =>
       parseDelegateAction(
-        JSON.stringify({ action: "agents", tasks: [{ agent: "Ghost", prompt: "x" }] }),
+        JSON.stringify({ action: "plan", steps: [{ id: "x", agent: "Ghost", prompt: "x" }] }),
         agents,
         [],
       ),
@@ -293,8 +319,8 @@ describe("Coordination", () => {
         id: "call_1",
         name: "delegate",
         arguments: JSON.stringify({
-          action: "agents",
-          tasks: [{ agent: "Travel Agent", prompt: "Find flights." }],
+          action: "plan",
+          steps: [{ id: "s1", agent: "Travel Agent", prompt: "Find flights." }],
         }),
       };
       yield { type: "done" };
@@ -303,19 +329,7 @@ describe("Coordination", () => {
 
     const output = await coordination.run("Book a flight.");
 
-    expect(output).toBe("Let me check. Final answer.");
-    expect(runtime.delegatedTasks).toEqual([
-      [{ agent: "Travel Agent", prompt: "Find flights." }],
-    ]);
-    // The delegation result came back as the tool message.
-    expect(llm.requests[1]!.messages.at(-1)).toEqual({
-      role: "tool",
-      toolCallId: "call_1",
-      name: "delegate",
-      content: JSON.stringify([
-        { agent: "Travel Agent", text: "result for Travel Agent" },
-      ]),
-    });
+    expect(output).toEqual({ plan: [{ id: "s1", agent: "Travel Agent", prompt: "Find flights." }], narration: "Let me check. " });
   });
 
   test("asks the user, suspends with a resumable frame, and resumes with the answer", async () => {

@@ -41,6 +41,12 @@ export interface GenerationRequest {
   onDelta?(delta: string, textBefore: string): void;
   /** Hand tool calls to the application and resolve their results. */
   resolveToolCalls(calls: LLMToolCall[]): Promise<ResolvedToolCall[]>;
+  /**
+   * After a successful tool round, finalize immediately using the tool
+   * results instead of looping for a separate answer round. Removes the
+   * final LLM round trip when the tools already carried the answer.
+   */
+  finalizeAfterToolRound?: boolean;
 }
 
 export type GenerationStatus = "done" | "interrupted" | "error";
@@ -83,6 +89,7 @@ export class GenerationRunner {
       agentNames = true,
       onDelta,
       resolveToolCalls,
+      finalizeAfterToolRound = false,
     } = request;
 
     let text = "";
@@ -140,6 +147,19 @@ export class GenerationRunner {
                 result.error !== undefined ? { error: result.error } : result.result,
               ),
             });
+          }
+
+          if (finalizeAfterToolRound) {
+            // Skip the answer round: synthesize the output from the tool
+            // results, keeping any text the model already narrated.
+            const lines = results.map(
+              (result) =>
+                `${result.name}: ${
+                  result.error !== undefined ? JSON.stringify({ error: result.error }) : JSON.stringify(result.result)
+                }`,
+            );
+            const toolText = lines.join("\n");
+            return { text: text ? `${text}\n${toolText}` : toolText, status: "done", toolRounds };
           }
           continue;
         }

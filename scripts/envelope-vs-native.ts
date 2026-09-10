@@ -3,19 +3,22 @@
 //
 //   RUNS=3 MODELS="meta-llama/llama-4-scout,amazon/nova-micro-v1" \
 //     bun scripts/envelope-vs-native.ts
+//
+//   PROVIDER=deepseek MODEL=deepseek-chat RUNS=5 \
+//     bun scripts/envelope-vs-native.ts
 
 import { FAVORITE_MODELS } from "../src/providers/llm/types";
 import { ToolModeBenchmark } from "../src/providers/llm/toolmode/toolmode";
 
-const apiKey = process.env.OPENROUTER_API_KEY;
+const PROVIDER = (process.env.PROVIDER ?? "openrouter") as "openrouter" | "deepseek";
+const apiKey = process.env[PROVIDER === "deepseek" ? "DEEPSEEK_API_KEY" : "OPENROUTER_API_KEY"];
 if (!apiKey) {
-  console.error("OPENROUTER_API_KEY is required");
+  console.error(`${PROVIDER === "deepseek" ? "DEEPSEEK_API_KEY" : "OPENROUTER_API_KEY"} is required`);
   process.exit(1);
 }
-// Narrowed const so hoisted functions below see a string, not string|undefined.
 const KEY = apiKey;
 
-const MODELS = (process.env.MODELS ?? FAVORITE_MODELS.join(",")).split(",");
+const MODELS = (process.env.MODELS ?? (PROVIDER === "deepseek" ? "deepseek-chat" : FAVORITE_MODELS.join(","))).split(",");
 const RUNS = Number(process.env.RUNS ?? 3);
 
 function fmtCost(cost: number | undefined): string {
@@ -26,7 +29,7 @@ console.log(
   `envelope vs native vs prompted — ${RUNS} runs per model (latency p50/p95/p99, cost, success, correct)`,
 );
 for (const model of MODELS) {
-  const bench = new ToolModeBenchmark({ apiKey: KEY, model, runs: RUNS });
+  const bench = new ToolModeBenchmark({ apiKey: KEY, model, provider: PROVIDER, runs: RUNS });
   const result = await bench.run();
   const pIn = result.pricing ? (result.pricing.in * 1e6).toFixed(3) : "?";
   const pOut = result.pricing ? (result.pricing.out * 1e6).toFixed(3) : "?";

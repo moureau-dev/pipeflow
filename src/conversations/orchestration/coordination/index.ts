@@ -14,4 +14,6 @@ export type {
   DelegatedTask,
   DelegationResult,
   PendingFrame,
+  Plan,
+  PlanStep,
 } from "./coordination";

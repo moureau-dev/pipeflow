@@ -66,6 +66,6 @@ describe("buildUnderstandPrompt", () => {
     ]);
     expect(prompt).toContain("- Travel (aliases: trip)");
     expect(prompt).toContain("- Calendar");
-    expect(prompt).toContain("delegate");
+    expect(prompt).toContain("plan");
   });
 });

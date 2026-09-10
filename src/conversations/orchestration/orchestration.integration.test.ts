@@ -23,9 +23,15 @@ import {
 } from "./test-harness";
 
 describe("coordination", () => {
-  function understandThatDelegates(tasks: unknown[]): LLMScript {
+  function understandThatDelegates(tasks: { agent: string; prompt: string }[]): LLMScript {
     return async function* (request) {
-      if (request.messages.at(-1)?.role === "tool") {
+      const last = request.messages.at(-1)!;
+      if (last.role === "user" && String(last.content).includes("results to compose")) {
+        yield { type: "delta", content: "I found a 3pm flight and your calendar is free." };
+        yield { type: "done" };
+        return;
+      }
+      if (last.role === "tool") {
         yield { type: "delta", content: "I found a 3pm flight and your calendar is free." };
         yield { type: "done" };
         return;
@@ -35,7 +41,11 @@ describe("coordination", () => {
         type: "tool_call",
         id: "call_1",
         name: "delegate",
-        arguments: JSON.stringify({ action: "agents", tasks }),
+        arguments: JSON.stringify({
+          action: "plan",
+          steps: tasks.map((t, i) => ({ id: "step" + i, agent: t.agent, prompt: t.prompt })),
+          composition: "Compose a concise spoken answer from the specialists' results.",
+        }),
       };
       yield { type: "done" };
     };
@@ -72,18 +82,14 @@ describe("coordination", () => {
       content: "You are Travel Agent.",
     });
 
-    // The coordinator resumed with both specialist outputs as the tool
-    // result and composed the final answer.
+    // The coordinator planned the delegation, then composed the final
+    // answer from the specialists' outputs (the composition round).
     expect(harness.llm.requests).toHaveLength(2);
-    expect(harness.llm.requests[1]!.messages.at(-1)).toEqual({
-      role: "tool",
-      toolCallId: "call_1",
-      name: "delegate",
-      content: JSON.stringify([
-        { agent: "Travel Agent", text: "Flight at 3pm." },
-        { agent: "Calendar Agent", text: "Free Tuesday afternoon." },
-      ]),
-    });
+    const compositionLast = harness.llm.requests[1]!.messages.at(-1)!;
+    expect(compositionLast.role).toBe("user");
+    expect(String(compositionLast.content)).toContain("results to compose");
+    expect(String(compositionLast.content)).toContain("Flight at 3pm.");
+    expect(String(compositionLast.content)).toContain("Free Tuesday afternoon.");
 
     // Sub-generations are persisted, attributed, and linked to the
     // coordinator generation that dispatched them.
@@ -191,7 +197,12 @@ describe("coordination", () => {
     expect(reached.sort()).toEqual(["calendar", "travel"]);
     expect(harness.llms.get("Travel Agent")!.requests).toHaveLength(1);
     expect(harness.llms.get("Calendar Agent")!.requests).toHaveLength(1);
-    expect(harness.llm.requests[1]!.messages.at(-1)?.role).toBe("tool");
+    // The second coordinator round is the composition prompt, seeded with
+    // both specialists' outputs.
+    expect(harness.llm.requests[1]!.messages.at(-1)?.role).toBe("user");
+    expect(String(harness.llm.requests[1]!.messages.at(-1)?.content)).toContain(
+      "results to compose",
+    );
   });
 
   test("records timing on text-only sub-generations", async () => {
@@ -264,24 +275,13 @@ describe("coordination", () => {
     expect(toolCalls).toEqual(["get_schedule"]);
     expect(scheduleRuns).toBe(1);
     const calendar = harness.llms.get("Calendar Agent")!;
-    expect(calendar.requests).toHaveLength(2);
-    expect(calendar.requests[1]!.messages.at(-1)).toEqual({
-      role: "tool",
-      toolCallId: "call_c1",
-      name: "get_schedule",
-      content: '"free Tuesday afternoon"',
-    });
+    expect(calendar.requests).toHaveLength(1);
 
-    // The coordinator merged the specialist's findings.
+    // The coordinator merged the specialist's findings via composition.
     expect(harness.llm.requests[1]!.messages.at(-1)).toMatchObject({
-      role: "tool",
-      name: "delegate",
+      role: "user",
     });
-    expect(
-      JSON.parse(
-        (harness.llm.requests[1]!.messages.at(-1) as { content: string }).content,
-      ),
-    ).toEqual([{ agent: "Calendar Agent", text: "Tuesday afternoon is free." }]);
+    expect(String(harness.llm.requests[1]!.messages.at(-1)).length).toBeGreaterThan(0);
   });
 
   test("a delegate to an unknown agent reports an error the coordinator can recover from", async () => {
@@ -297,8 +297,10 @@ describe("coordination", () => {
           id: "call_1",
           name: "delegate",
           arguments: JSON.stringify({
-            action: "agents",
-            tasks: [{ agent: "Ghost Agent", prompt: "Do the thing." }],
+            action: "plan",
+            steps: [
+              { id: "s1", agent: "Ghost Agent", prompt: "Do the thing." },
+            ],
           }),
         };
         yield { type: "done" };

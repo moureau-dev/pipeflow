@@ -12,13 +12,16 @@
  */
 
 import { OpenRouterLLM } from "../adapters/openrouter/openrouter";
+import { DeepSeekLLM } from "../adapters/deepseek/deepseek";
 import { z } from "zod";
 import type { FetchLike } from "../../shared";
-import type { LLMMessage, LLMToolDefinition, ToolMode } from "../types";
+import type { LLM, LLMMessage, LLMToolDefinition, ToolMode } from "../types";
 
 export interface ToolModeBenchmarkOptions {
   apiKey: string;
   model: string;
+  /** Provider adapter: "openrouter" (default) or "deepseek". */
+  provider?: "openrouter" | "deepseek";
   /** Override the OpenRouter base URL. */
   baseUrl?: string;
   /** Runs per mode (default 3). */
@@ -138,6 +141,7 @@ async function fetchPricing(
 export class ToolModeBenchmark {
   private readonly apiKey: string;
   private readonly model: string;
+  private readonly provider: "openrouter" | "deepseek";
   private readonly baseUrl: string | undefined;
   private readonly runs: number;
   private readonly messages: LLMMessage[];
@@ -148,12 +152,26 @@ export class ToolModeBenchmark {
   constructor(options: ToolModeBenchmarkOptions) {
     this.apiKey = options.apiKey;
     this.model = options.model;
+    this.provider = options.provider ?? "openrouter";
     this.baseUrl = options.baseUrl;
     this.runs = options.runs ?? 3;
     this.messages = options.messages ?? WEATHER_MESSAGES;
     this.tools = options.tools ?? [WEATHER_TOOL];
     this.correctnessSchema = options.correctnessSchema ?? WEATHER_ARGS;
     this.fetchImpl = options.fetch ?? fetch;
+  }
+
+  private createLLM(onUsage: (usage: { promptTokens: number; completionTokens: number }) => void): LLM {
+    if (this.provider === "deepseek") {
+      return new DeepSeekLLM({ apiKey: this.apiKey, model: this.model, onUsage });
+    }
+    return new OpenRouterLLM({
+      apiKey: this.apiKey,
+      model: this.model,
+      baseUrl: this.baseUrl,
+      fetch: this.fetchImpl,
+      onUsage,
+    });
   }
 
   /** Benchmark every mode and return the structured report. */
@@ -191,14 +209,8 @@ export class ToolModeBenchmark {
 
     for (let i = 0; i < this.runs; i++) {
       let usage: { prompt?: number; completion?: number } = {};
-      const llm = new OpenRouterLLM({
-        apiKey: this.apiKey,
-        model: this.model,
-        baseUrl: this.baseUrl,
-        fetch: this.fetchImpl,
-        onUsage: (u) => {
-          usage = { prompt: u.promptTokens, completion: u.completionTokens };
-        },
+      const llm = this.createLLM((u) => {
+        usage = { prompt: u.promptTokens, completion: u.completionTokens };
       });
       const start = performance.now();
       let toolCallAt: number | undefined;

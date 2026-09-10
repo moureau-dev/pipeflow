@@ -104,3 +104,12 @@ bun --hot ./index.ts
 ```
 
 For more information, read the Bun API docs in `node_modules/bun-types/docs/**.md`.
+
+## Documentation
+
+After any significant change, check and update these files if needed:
+
+- `README.md` — public API, status table, examples
+- `CHANGELOG.md` — add to `[Unreleased]` section under Added/Fixed/Changed
+- `llms.txt` — AI reference guide: exports, patterns, API surface
+- `src/**/README.md` — subpath docs (transport, client, persistence, providers)

@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Conversation listing with filters** — `pipeflow.conversations.list()` accepts `userId`, `status`, `archived`, `orderBy`, `orderDir`, `page`, and `pageSize` filters. Returns `{ conversations, total }` for paginated UIs. Excludes archived conversations by default.
 - **Conversation archiving** — `pipeflow.conversations.archive(id)` soft-deletes by setting `archivedAt`. Archived conversations are hidden from `list()` but still retrievable via `get()`. Filter with `list({ archived: true })`.
 - **`createdBy` field** — conversations can be tagged with the creating user's id. Filtered via `list({ userId })`.
+- **Client `generation-complete` and `text-delta` events** — `PipeflowClient` now dispatches `generation-complete` and `text-delta` events, letting the server decide whether to forward streaming text deltas to clients.
 
 ### Fixed
 

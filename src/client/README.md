@@ -46,6 +46,8 @@ Mirrors `Conversation` over the wire. Subscribed with `client.on(event, listener
 | `partial-transcript` | `{ conversationId, userId, text }` |
 | `audio` | `{ conversationId, audio }` |
 | `generation` | `{ conversationId, generation }` |
+| `generation-complete` | `{ conversationId, generation }` |
+| `text-delta` | `{ conversationId, text, agentName? }` |
 | `tool-call` | `{ conversationId, call }` |
 | `tool-call-result` | `{ conversationId, result }` |
 | `interrupt` | `{ conversationId }` |

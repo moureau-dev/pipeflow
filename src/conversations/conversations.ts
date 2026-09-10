@@ -104,7 +104,14 @@ export class Conversations {
    * ordering. Returns the page and the total count matching the filter.
    */
   async list(filters?: ConversationFilters): Promise<ConversationListResult> {
-    return this.persistence.listConversations(filters);
+    return this.persistence.listConversations({ archived: false, ...filters });
+  }
+
+  /** Archive a conversation. It is hidden from list() by default but still retrievable via get(). */
+  async archive(id: ConversationId): Promise<ConversationRecord | null> {
+    const record = await this.persistence.getConversation(id);
+    if (!record) return null;
+    return this.persistence.archiveConversation(id);
   }
 
   /** Permanently delete a conversation and all its data. */

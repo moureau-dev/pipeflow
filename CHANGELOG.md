@@ -13,8 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Server transport abstraction** — `ServerAdapter`/`ServerClient` interfaces let any runtime (Bun, Node `ws`, socket.io) bridge `Conversation` events to remote clients. `BunServerAdapter` wraps `Bun.serve()`; `ConversationWebSocketServer` is the runtime-independent bridge. Exported from `@moureau/pipeflow/transport`.
 - **Per-conversation LLM abort isolation** — `LLMRequest.signal` allows each orchestrator to abort its own generation without affecting other conversations sharing the same LLM instance. `onInterrupt()` and `stop()` now use this per-conversation `AbortController` instead of calling `llm.stop()` (which previously aborted all streams on that LLM instance, regardless of which conversation owned them).
 - **Event-driven `whenIdle()`** — replaced busy-wait polling with a promise-based notification, eliminating CPU spin during test idle detection.
-- **Conversation listing with filters** — `pipeflow.conversations.list()` accepts `userId`, `status`, `orderBy`, `orderDir`, `page`, and `pageSize` filters. Returns `{ conversations, total }` for paginated UIs.
-- **Conversation deletion** — `pipeflow.conversations.delete(id)` permanently removes a conversation and all its data.
+- **Conversation listing with filters** — `pipeflow.conversations.list()` accepts `userId`, `status`, `archived`, `orderBy`, `orderDir`, `page`, and `pageSize` filters. Returns `{ conversations, total }` for paginated UIs. Excludes archived conversations by default.
+- **Conversation archiving** — `pipeflow.conversations.archive(id)` soft-deletes by setting `archivedAt`. Archived conversations are hidden from `list()` but still retrievable via `get()`. Filter with `list({ archived: true })`.
 - **`createdBy` field** — conversations can be tagged with the creating user's id. Filtered via `list({ userId })`.
 
 ### Fixed

@@ -32,6 +32,7 @@ export class MemoryPersistence implements Persistence {
       createdBy: input.createdBy,
       createdAt: input.createdAt ?? Date.now(),
       endedAt: null,
+      archivedAt: null,
     };
     this.conversations.set(record.id, record);
     return copyConversation(record);
@@ -52,6 +53,11 @@ export class MemoryPersistence implements Persistence {
       list = list.filter((c) => c.endedAt === null);
     } else if (filters?.status === "ended") {
       list = list.filter((c) => c.endedAt !== null);
+    }
+    if (filters?.archived === false) {
+      list = list.filter((c) => c.archivedAt === null);
+    } else if (filters?.archived === true) {
+      list = list.filter((c) => c.archivedAt !== null);
     }
 
     const orderBy = filters?.orderBy ?? "createdAt";
@@ -78,6 +84,13 @@ export class MemoryPersistence implements Persistence {
     const record = this.conversations.get(id);
     if (!record) return null;
     record.endedAt = endedAt;
+    return copyConversation(record);
+  }
+
+  async archiveConversation(id: ConversationId): Promise<ConversationRecord | null> {
+    const record = this.conversations.get(id);
+    if (!record) return null;
+    record.archivedAt = Date.now();
     return copyConversation(record);
   }
 

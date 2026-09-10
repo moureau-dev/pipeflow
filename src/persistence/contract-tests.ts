@@ -69,6 +69,7 @@ export function persistenceContractTests(create: () => Persistence): void {
       expect(record.id).toBeTruthy();
       expect(record.agentNames).toEqual(["Jarvis"]);
       expect(record.endedAt).toBeNull();
+      expect(record.archivedAt).toBeNull();
       expect(record.createdAt).toBeGreaterThan(0);
       expect(record.createdBy).toBeUndefined();
 
@@ -175,6 +176,41 @@ export function persistenceContractTests(create: () => Persistence): void {
     test("finalizeConversation returns null for unknown conversations", async () => {
       const persistence = create();
       expect(await persistence.finalizeConversation("missing")).toBeNull();
+    });
+
+    test("archiveConversation stamps archivedAt", async () => {
+      const persistence = create();
+      const record = await persistence.createConversation();
+
+      const archived = await persistence.archiveConversation(record.id);
+      expect(archived?.archivedAt).toBeGreaterThan(0);
+
+      const fetched = await persistence.getConversation(record.id);
+      expect(fetched?.archivedAt).toBeGreaterThan(0);
+    });
+
+    test("archiveConversation returns null for unknown conversations", async () => {
+      const persistence = create();
+      expect(await persistence.archiveConversation("missing")).toBeNull();
+    });
+
+    test("listConversations excludes archived by default", async () => {
+      const persistence = create();
+      await persistence.createConversation({ agentNames: ["a"] });
+      const b = await persistence.createConversation({ agentNames: ["b"] });
+      await persistence.archiveConversation(b.id);
+
+      const all = await persistence.listConversations();
+      expect(all.conversations).toHaveLength(2);
+      expect(all.total).toBe(2);
+
+      const notArchived = await persistence.listConversations({ archived: false });
+      expect(notArchived.conversations).toHaveLength(1);
+      expect(notArchived.conversations[0]!.agentNames).toEqual(["a"]);
+
+      const archived = await persistence.listConversations({ archived: true });
+      expect(archived.conversations).toHaveLength(1);
+      expect(archived.conversations[0]!.agentNames).toEqual(["b"]);
     });
 
     test("deleteConversation removes the conversation and its data", async () => {

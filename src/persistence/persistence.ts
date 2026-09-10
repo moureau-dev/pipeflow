@@ -14,6 +14,7 @@ export interface ConversationRecord {
   createdBy?: UserId;
   createdAt: number;
   endedAt: number | null;
+  archivedAt: number | null;
 }
 
 export interface NewConversation {
@@ -26,6 +27,7 @@ export interface NewConversation {
 export interface ConversationFilters {
   userId?: UserId;
   status?: "active" | "ended";
+  archived?: boolean;
   orderBy?: "createdAt" | "endedAt";
   orderDir?: "asc" | "desc";
   page?: number;
@@ -54,6 +56,7 @@ export interface Persistence {
     id: ConversationId,
     endedAt?: number,
   ): Promise<ConversationRecord | null>;
+  archiveConversation(id: ConversationId): Promise<ConversationRecord | null>;
   deleteConversation(id: ConversationId): Promise<boolean>;
 
   // Participants ------------------------------------------------------------

@@ -27,6 +27,7 @@ interface ConversationRow {
   created_by: string | null;
   created_at: number;
   ended_at: number | null;
+  archived_at: number | null;
 }
 
 type Bindings = (string | number)[];
@@ -89,7 +90,8 @@ export class SQLitePersistence implements Persistence {
         agent_names TEXT NOT NULL,
         created_by  TEXT,
         created_at  INTEGER NOT NULL,
-        ended_at    INTEGER
+        ended_at    INTEGER,
+        archived_at INTEGER
       );
 
       CREATE TABLE IF NOT EXISTS participants (
@@ -170,13 +172,14 @@ export class SQLitePersistence implements Persistence {
       createdBy: input.createdBy,
       createdAt: input.createdAt ?? Date.now(),
       endedAt: null,
+      archivedAt: null,
     };
     this.db
       .query(
-        `INSERT OR REPLACE INTO conversations (id, agent_names, created_by, created_at, ended_at)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO conversations (id, agent_names, created_by, created_at, ended_at, archived_at)
+         VALUES (?, ?, ?, ?, ?, ?)`,
       )
-      .run(record.id, JSON.stringify(record.agentNames), record.createdBy ?? null, record.createdAt, null);
+      .run(record.id, JSON.stringify(record.agentNames), record.createdBy ?? null, record.createdAt, null, null);
     return { ...record };
   }
 
@@ -199,6 +202,11 @@ export class SQLitePersistence implements Persistence {
       conditions.push("ended_at IS NULL");
     } else if (filters?.status === "ended") {
       conditions.push("ended_at IS NOT NULL");
+    }
+    if (filters?.archived === false) {
+      conditions.push("archived_at IS NULL");
+    } else if (filters?.archived === true) {
+      conditions.push("archived_at IS NOT NULL");
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
@@ -228,6 +236,14 @@ export class SQLitePersistence implements Persistence {
     const result = this.db
       .query<unknown, [number, string]>(`UPDATE conversations SET ended_at = ? WHERE id = ?`)
       .run(endedAt, id);
+    if (result.changes === 0) return null;
+    return this.getConversation(id);
+  }
+
+  async archiveConversation(id: ConversationId): Promise<ConversationRecord | null> {
+    const result = this.db
+      .query<unknown, [number, string]>(`UPDATE conversations SET archived_at = ? WHERE id = ?`)
+      .run(Date.now(), id);
     if (result.changes === 0) return null;
     return this.getConversation(id);
   }
@@ -402,5 +418,6 @@ function rowToConversation(row: ConversationRow): ConversationRecord {
     createdBy: row.created_by ?? undefined,
     createdAt: row.created_at,
     endedAt: row.ended_at,
+    archivedAt: row.archived_at,
   };
 }

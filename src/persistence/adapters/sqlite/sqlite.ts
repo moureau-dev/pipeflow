@@ -9,6 +9,8 @@ import type {
 } from "../../../conversations/types";
 import { TranscriptEntry } from "../../../conversations/transcription/transcription";
 import type {
+  ConversationFilters,
+  ConversationListResult,
   ConversationRecord,
   NewConversation,
   Persistence,
@@ -22,9 +24,12 @@ export interface SQLitePersistenceOptions {
 interface ConversationRow {
   id: string;
   agent_names: string;
+  created_by: string | null;
   created_at: number;
   ended_at: number | null;
 }
+
+type Bindings = (string | number)[];
 
 interface ParticipantRow {
   conversation_id: string;
@@ -82,6 +87,7 @@ export class SQLitePersistence implements Persistence {
       CREATE TABLE IF NOT EXISTS conversations (
         id          TEXT PRIMARY KEY,
         agent_names TEXT NOT NULL,
+        created_by  TEXT,
         created_at  INTEGER NOT NULL,
         ended_at    INTEGER
       );
@@ -161,15 +167,16 @@ export class SQLitePersistence implements Persistence {
     const record: ConversationRecord = {
       id: input.id ?? crypto.randomUUID(),
       agentNames: input.agentNames ?? [],
+      createdBy: input.createdBy,
       createdAt: input.createdAt ?? Date.now(),
       endedAt: null,
     };
     this.db
       .query(
-        `INSERT OR REPLACE INTO conversations (id, agent_names, created_at, ended_at)
-         VALUES (?, ?, ?, ?)`,
+        `INSERT OR REPLACE INTO conversations (id, agent_names, created_by, created_at, ended_at)
+         VALUES (?, ?, ?, ?, ?)`,
       )
-      .run(record.id, JSON.stringify(record.agentNames), record.createdAt, null);
+      .run(record.id, JSON.stringify(record.agentNames), record.createdBy ?? null, record.createdAt, null);
     return { ...record };
   }
 
@@ -180,11 +187,38 @@ export class SQLitePersistence implements Persistence {
     return row ? rowToConversation(row) : null;
   }
 
-  async listConversations(): Promise<ConversationRecord[]> {
-    const rows = this.db
-      .query<ConversationRow, []>(`SELECT * FROM conversations ORDER BY created_at ASC`)
-      .all();
-    return rows.map(rowToConversation);
+  async listConversations(filters?: ConversationFilters): Promise<ConversationListResult> {
+    const conditions: string[] = [];
+    const params: Bindings = [];
+
+    if (filters?.userId) {
+      conditions.push("created_by = ?");
+      params.push(filters.userId);
+    }
+    if (filters?.status === "active") {
+      conditions.push("ended_at IS NULL");
+    } else if (filters?.status === "ended") {
+      conditions.push("ended_at IS NOT NULL");
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(" AND ")}` : "";
+    const orderBy = filters?.orderBy === "endedAt" ? "ended_at" : "created_at";
+    const orderDir = filters?.orderDir === "asc" ? "ASC" : "DESC";
+
+    const countRow: { count: number } | null = (where
+      ? this.db.query(`SELECT COUNT(*) as count FROM conversations ${where}`).get(...params)
+      : this.db.query(`SELECT COUNT(*) as count FROM conversations`).get()) as { count: number } | null;
+    const total = countRow?.count ?? 0;
+
+    const page = Math.max(1, filters?.page ?? 1);
+    const pageSize = Math.max(1, filters?.pageSize ?? 100);
+    const offset = (page - 1) * pageSize;
+
+    const rows: ConversationRow[] = (where
+      ? this.db.query(`SELECT * FROM conversations ${where} ORDER BY ${orderBy} ${orderDir} LIMIT ? OFFSET ?`).all(...params, pageSize, offset)
+      : this.db.query(`SELECT * FROM conversations ORDER BY ${orderBy} ${orderDir} LIMIT ? OFFSET ?`).all(pageSize, offset)) as ConversationRow[];
+
+    return { conversations: rows.map(rowToConversation), total };
   }
 
   async finalizeConversation(
@@ -365,6 +399,7 @@ function rowToConversation(row: ConversationRow): ConversationRecord {
   return {
     id: row.id,
     agentNames: JSON.parse(row.agent_names) as string[],
+    createdBy: row.created_by ?? undefined,
     createdAt: row.created_at,
     endedAt: row.ended_at,
   };

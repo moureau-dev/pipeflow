@@ -15,7 +15,7 @@ describe("SQLitePersistence", () => {
 
     const record = await a.createConversation();
     expect(await a.getConversation(record.id)).not.toBeNull();
-    expect(await b.listConversations()).toEqual([]);
+    expect((await b.listConversations()).conversations).toEqual([]);
 
     a.close();
     b.close();
@@ -89,6 +89,6 @@ describe("SQLitePersistence", () => {
   test("querying a closed database throws", async () => {
     const persistence = new SQLitePersistence();
     persistence.close();
-    expect(persistence.listConversations()).rejects.toThrow();
+    await expect(persistence.listConversations()).rejects.toThrow();
   });
 });

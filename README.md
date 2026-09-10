@@ -19,7 +19,7 @@ It handles the plumbing between audio, speech-to-text, LLMs, text-to-speech, con
 
 ✅ **Production ready** for text-only, multi-conversation, multi-agent,
 multi-tool workloads. The core engine (orchestrator, coordination, tools,
-persistence, logging, transport) is stable with 560+ passing tests.
+persistence, logging, transport) is stable with 500+ passing tests.
 
 > Voice and audio pipelines (STT/TTS) are functional but receive less
 > production hardening than the text path. Audio providers, latency budgets,

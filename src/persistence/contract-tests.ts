@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import type { Generation, Participant, Turn } from "../conversations/types";
 import { TranscriptEntry } from "../conversations/transcription/transcription";
 import type { Persistence } from "./persistence";
+import type { ConversationFilters } from "./persistence";
 
 /**
  * A shared test suite that every Persistence adapter must pass.
@@ -69,9 +70,19 @@ export function persistenceContractTests(create: () => Persistence): void {
       expect(record.agentNames).toEqual(["Jarvis"]);
       expect(record.endedAt).toBeNull();
       expect(record.createdAt).toBeGreaterThan(0);
+      expect(record.createdBy).toBeUndefined();
 
       const fetched = await persistence.getConversation(record.id);
       expect(fetched).toEqual(record);
+    });
+
+    test("create honors createdBy", async () => {
+      const persistence = create();
+      const record = await persistence.createConversation({ agentNames: ["Jarvis"], createdBy: "alice" });
+      expect(record.createdBy).toBe("alice");
+
+      const fetched = await persistence.getConversation(record.id);
+      expect(fetched?.createdBy).toBe("alice");
     });
 
     test("create honors an explicit id", async () => {
@@ -85,13 +96,68 @@ export function persistenceContractTests(create: () => Persistence): void {
       expect(await persistence.getConversation("missing")).toBeNull();
     });
 
-    test("listConversations returns conversations in creation order", async () => {
+    test("listConversations returns conversations in descending creation order by default", async () => {
       const persistence = create();
       const a = await persistence.createConversation({ agentNames: ["a"] });
+      await Bun.sleep(1);
       const b = await persistence.createConversation({ agentNames: ["b"] });
 
       const listed = await persistence.listConversations();
-      expect(listed.map((c) => c.id)).toEqual([a.id, b.id]);
+      expect(listed.conversations.map((c) => c.id)).toEqual([b.id, a.id]);
+      expect(listed.total).toBe(2);
+    });
+
+    test("listConversations filters by userId", async () => {
+      const persistence = create();
+      const a = await persistence.createConversation({ agentNames: ["a"], createdBy: "alice" });
+      await persistence.createConversation({ agentNames: ["b"], createdBy: "bob" });
+
+      const listed = await persistence.listConversations({ userId: "alice" });
+      expect(listed.conversations.map((c) => c.id)).toEqual([a.id]);
+      expect(listed.total).toBe(1);
+    });
+
+    test("listConversations filters by status", async () => {
+      const persistence = create();
+      const a = await persistence.createConversation({ agentNames: ["a"] });
+      await Bun.sleep(2);
+      const b = await persistence.createConversation({ agentNames: ["b"] });
+      await persistence.finalizeConversation(b.id);
+
+      const active = await persistence.listConversations({ status: "active" });
+      expect(active.conversations).toHaveLength(1);
+      expect(active.conversations[0]!.agentNames).toEqual(["a"]);
+      expect(active.total).toBe(1);
+
+      const ended = await persistence.listConversations({ status: "ended" });
+      expect(ended.conversations).toHaveLength(1);
+      expect(ended.conversations[0]!.agentNames).toEqual(["b"]);
+      expect(ended.total).toBe(1);
+    });
+
+    test("listConversations paginates", async () => {
+      const persistence = create();
+      const ids: string[] = [];
+      for (let i = 0; i < 5; i++) {
+        const r = await persistence.createConversation({ agentNames: [`conv-${i}`] });
+        ids.push(r.id);
+      }
+
+      // Default pageSize is 100, all returned
+      const all = await persistence.listConversations();
+      expect(all.conversations).toHaveLength(5);
+
+      const page = await persistence.listConversations({ page: 1, pageSize: 2 });
+      expect(page.conversations).toHaveLength(2);
+      expect(page.total).toBe(5);
+
+      const page2 = await persistence.listConversations({ page: 2, pageSize: 2 });
+      expect(page2.conversations).toHaveLength(2);
+      expect(page2.total).toBe(5);
+
+      const page3 = await persistence.listConversations({ page: 3, pageSize: 2 });
+      expect(page3.conversations).toHaveLength(1);
+      expect(page3.total).toBe(5);
     });
 
     test("finalizeConversation stamps endedAt", async () => {

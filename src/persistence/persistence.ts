@@ -10,6 +10,8 @@ import type { TranscriptEntry } from "../conversations/transcription/transcripti
 export interface ConversationRecord {
   id: ConversationId;
   agentNames: string[];
+  /** User id that created the conversation, if known. */
+  createdBy?: UserId;
   createdAt: number;
   endedAt: number | null;
 }
@@ -17,7 +19,22 @@ export interface ConversationRecord {
 export interface NewConversation {
   id?: ConversationId;
   agentNames?: string[];
+  createdBy?: UserId;
   createdAt?: number;
+}
+
+export interface ConversationFilters {
+  userId?: UserId;
+  status?: "active" | "ended";
+  orderBy?: "createdAt" | "endedAt";
+  orderDir?: "asc" | "desc";
+  page?: number;
+  pageSize?: number;
+}
+
+export interface ConversationListResult {
+  conversations: ConversationRecord[];
+  total: number;
 }
 
 /**
@@ -31,7 +48,7 @@ export interface Persistence {
 
   createConversation(input?: NewConversation): Promise<ConversationRecord>;
   getConversation(id: ConversationId): Promise<ConversationRecord | null>;
-  listConversations(): Promise<ConversationRecord[]>;
+  listConversations(filters?: ConversationFilters): Promise<ConversationListResult>;
   /** Mark a conversation as ended. Returns null if it does not exist. */
   finalizeConversation(
     id: ConversationId,

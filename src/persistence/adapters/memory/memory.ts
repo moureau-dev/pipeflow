@@ -7,6 +7,8 @@ import type {
 } from "../../../conversations/types";
 import type { TranscriptEntry } from "../../../conversations/transcription/transcription";
 import type {
+  ConversationFilters,
+  ConversationListResult,
   ConversationRecord,
   NewConversation,
   Persistence,
@@ -27,6 +29,7 @@ export class MemoryPersistence implements Persistence {
     const record: ConversationRecord = {
       id: input.id ?? crypto.randomUUID(),
       agentNames: [...(input.agentNames ?? [])],
+      createdBy: input.createdBy,
       createdAt: input.createdAt ?? Date.now(),
       endedAt: null,
     };
@@ -39,10 +42,33 @@ export class MemoryPersistence implements Persistence {
     return record ? copyConversation(record) : null;
   }
 
-  async listConversations(): Promise<ConversationRecord[]> {
-    return [...this.conversations.values()]
-      .sort((a, b) => a.createdAt - b.createdAt)
-      .map(copyConversation);
+  async listConversations(filters?: ConversationFilters): Promise<ConversationListResult> {
+    let list = [...this.conversations.values()];
+
+    if (filters?.userId) {
+      list = list.filter((c) => c.createdBy === filters.userId);
+    }
+    if (filters?.status === "active") {
+      list = list.filter((c) => c.endedAt === null);
+    } else if (filters?.status === "ended") {
+      list = list.filter((c) => c.endedAt !== null);
+    }
+
+    const orderBy = filters?.orderBy ?? "createdAt";
+    const orderDir = filters?.orderDir ?? "desc";
+    list.sort((a, b) => {
+      const aVal = orderBy === "createdAt" ? a.createdAt : (a.endedAt ?? a.createdAt);
+      const bVal = orderBy === "createdAt" ? b.createdAt : (b.endedAt ?? b.createdAt);
+      return orderDir === "asc" ? aVal - bVal : bVal - aVal;
+    });
+
+    const total = list.length;
+    const page = Math.max(1, filters?.page ?? 1);
+    const pageSize = Math.max(1, filters?.pageSize ?? 100);
+    const start = (page - 1) * pageSize;
+    const conversations = list.slice(start, start + pageSize).map(copyConversation);
+
+    return { conversations, total };
   }
 
   async finalizeConversation(

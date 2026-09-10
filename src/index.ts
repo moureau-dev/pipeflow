@@ -24,8 +24,11 @@ export {
 export type {
   AudioChunk,
   ConversationEvents,
+  ConversationFilters,
   ConversationId,
+  ConversationListResult,
   ConversationOptions,
+  ConversationRecord,
   ConversationState,
   ConversationStatus,
   CreateConversationOptions,

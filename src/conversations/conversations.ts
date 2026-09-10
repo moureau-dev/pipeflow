@@ -1,5 +1,5 @@
 import type { Agent } from "../agents/agent";
-import type { Persistence } from "../persistence/persistence";
+import type { Persistence, ConversationFilters, ConversationListResult, ConversationRecord } from "../persistence/persistence";
 import type { STT } from "../providers/stt/types";
 import type { TTS } from "../providers/tts/types";
 import type { ConversationId } from "./types";
@@ -9,6 +9,7 @@ import type { Logger } from "../logger/types";
 
 export interface CreateConversationOptions {
   agents?: Agent[];
+  createdBy?: string;
   /**
    * Execute the agents' tools automatically (default `true`). Set `false`
    * for this conversation to resolve tool calls from your own backend via
@@ -65,8 +66,9 @@ export class Conversations {
   async create(options: CreateConversationOptions = {}): Promise<Conversation> {
     const record = await this.persistence.createConversation({
       agentNames: (options.agents ?? []).map((agent) => agent.name),
+      createdBy: options.createdBy,
     });
-    this.logger.info("conversation created", { conversationId: record.id });
+    this.logger.info("conversation created", { conversationId: record.id, createdBy: options.createdBy });
     return new Conversation({
       id: record.id,
       agents: options.agents,
@@ -95,6 +97,21 @@ export class Conversations {
     const record = await this.persistence.getConversation(id);
     if (!record) return null;
     return new Conversation({ id: record.id, persistence: this.persistence });
+  }
+
+  /**
+   * List persisted conversations with optional filters, pagination, and
+   * ordering. Returns the page and the total count matching the filter.
+   */
+  async list(filters?: ConversationFilters): Promise<ConversationListResult> {
+    return this.persistence.listConversations(filters);
+  }
+
+  /** Permanently delete a conversation and all its data. */
+  async delete(id: ConversationId): Promise<boolean> {
+    const record = await this.persistence.getConversation(id);
+    if (!record) return false;
+    return this.persistence.deleteConversation(id);
   }
 
   private async requireConversation(id: ConversationId): Promise<void> {

@@ -11,7 +11,7 @@ describe("MemoryPersistence", () => {
 
     const record = await a.createConversation();
     expect(await a.getConversation(record.id)).not.toBeNull();
-    expect(await b.listConversations()).toEqual([]);
+    expect((await b.listConversations()).conversations).toEqual([]);
   });
 
   test("stored data is not aliased to caller-owned objects", async () => {

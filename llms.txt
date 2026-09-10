@@ -125,10 +125,48 @@ The `Logger` interface has `info`, `warn`, `error`, `debug` methods. The default
 
 ---
 
-## Conversation Lifecycle
+## Pipeline
+
+### Conversation Lifecycle
 
 ```ts
 create()       // creates the persistent conversation
+
+## Conversations API
+
+Conversations are created through `pipeflow.conversations`:
+
+```ts
+// Create
+const conversation = await pipeflow.conversations.create({ agents: [jarvis] });
+
+// Retrieve by id
+const conv = await pipeflow.conversations.get(id);
+
+// List with filters, ordering, and pagination
+const { conversations, total } = await pipeflow.conversations.list({
+  userId: "alice",
+  status: "active",        // "active" | "ended"
+  archived: false,          // exclude archived (default)
+  orderBy: "createdAt",     // "createdAt" | "endedAt"
+  orderDir: "desc",
+  page: 1,
+  pageSize: 100,
+});
+
+// Soft-delete (hides from list, still retrievable via get())
+await pipeflow.conversations.archive(id);
+
+// Permanently delete
+await pipeflow.conversations.delete(id);
+
+// Retrieve transcript
+const transcript = await pipeflow.conversations.transcript(id);
+```
+
+### Conversation Lifecycle
+
+```ts
 start()        // moves the conversation into the started state (attaches orchestrator)
 participate()  // adds participants
 listen()       // sends audio (synchronous — feed audio packets)
@@ -461,8 +499,25 @@ Everything happens as a stream — Pipeflow does not wait for a complete recordi
 | `@moureau/pipeflow/client` | Browser/Node client: `PipeflowClient`, `WebSocketProtocol`, `Protocol` |
 | `@moureau/pipeflow/providers` | All provider adapters |
 | `@moureau/pipeflow/persistence` | Persistence adapters (`SQLitePersistence`, `MemoryPersistence`) |
-| `@moureau/pipeflow/transport` | Transport types, `MemoryTransport`, `BunServerAdapter`, `ConversationWebSocketServer`, `ServerAdapter`/`ServerClient` types |
+| `@moureau/pipeflow/transport` | Transport types, `MemoryTransport`, `ServerAdapter`/`ServerClient` types |
 | `@moureau/pipeflow/conversations` | Conversation types and utilities |
+
+---
+
+## Server transport
+
+Pipeflow provides `ServerAdapter`/`ServerClient` interfaces so you can bridge
+conversations to remote clients with your own WebSocket server
+(Bun, Node `ws`, socket.io, etc.). You own the routing and event subscription:
+
+```ts
+import type { ServerAdapter, ServerClient } from "@moureau/pipeflow/transport";
+
+// Subscribe to exactly the events you want to forward
+conversation.on("turn", ({ turn }) => client.send(JSON.stringify({ type: "turn", turn })));
+conversation.on("generation-complete", ({ generation }) => client.send(...));
+// skip text-delta if you don't need streaming text
+```
 
 ---
 

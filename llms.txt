@@ -223,8 +223,11 @@ conversation.on("audio", ({ userId, audio }) => {});              // generated a
 conversation.on("generation", ({ userId, text }) => {});          // agent generation
 conversation.on("generation-complete", ({ generation }) => {});   // top-level generation finished
 conversation.on("text-delta", ({ text, agentName }) => {});       // streaming LLM deltas
+conversation.on("agent-delta", ({ agent, text }) => {});          // delegated specialist progress
 conversation.on("tool-call", ({ call }) => {});                   // every tool round-trip
 conversation.on("tool-call-result", ({ callId, result }) => {});  // tool execution result
+conversation.on("plan", ({ steps }) => {});                       // coordinator produced a plan
+conversation.on("plan-step", ({ step, status, text }) => {});     // step started/completed/failed
 conversation.on("interrupt", () => {});
 conversation.on("error", ({ error }) => {});
 conversation.on("start", ({}) => {});
@@ -268,15 +271,33 @@ const conversation = await pipeflow.conversations.create({
 });
 ```
 
-### Collaborative orchestration
+### Collaborative orchestration (plan-based)
 
-`understand` is a hardcoded **coordination**: a reasoning unit that decides what should happen next. It can:
-- **delegate** to one or more agents (in parallel), each with a self-contained prompt;
-- **pass** the work to another coordination;
-- **ask the user** for missing details via a structured, batched `clarify` action (capped at 2 question rounds, then assumptions are stated);
-- **complete** with a direct answer.
+`understand` is a hardcoded **coordination**: a reasoning unit that outputs
+a structured **plan** instead of re-delegating reactively. It produces one
+`delegate` call with all agent steps, then the framework executes deterministically.
 
-Agent delegation runs as sub-generations on their own LLM, context, and tools. Clarification resumes on the next turn — participant speech during a clarifiy wait is treated as the answer, not as barge-in.
+The coordinator can:
+- **plan** — output a structured plan with one step per agent. Each step has
+  an `id`, optional `agent` (omit for a pure-LLM step), `prompt`, and
+  `dependsOn` (string ids referencing other steps). Independent steps run in
+  parallel; dependent steps receive prior outputs. The model speaks the final
+  answer in its narration before emitting the plan, so there is no extra
+  composition round-trip.
+- **clarify** — ask the user for missing details via a structured, batched
+  `clarify` action (capped at 2 question rounds, then assumptions are stated).
+- **complete** — answer directly for trivial requests that need no agents.
+- **agents** — simpler syntax for models that can't handle the full plan
+  schema. Converted to a plan internally and executed the same way.
+
+Agent delegation runs as **sub-generations** on their own LLM, context, and
+tools (text-only, 3-tool-round max, 512-token output cap). Clarification
+resumes on the next turn — participant speech during a clarify wait is
+treated as the answer, not as barge-in. Plans can be observed via `plan` and
+`plan-step` events; specialist progress streams via `agent-delta`.
+
+Available as `retryDirectAnswer` (on `Conversation.create()` / `Pipeflow`)
+to retry once when multi-agent answers directly without planning.
 
 ---
 

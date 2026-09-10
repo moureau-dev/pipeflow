@@ -39,10 +39,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   steps resolve in order and receive their dependency outputs injected into the
   prompt. This eliminates infinite re-delegation loops and makes multi-agent
   execution deterministic, observable, and bounded to one plan round.
-- **Plan composition** — plans carry an optional `composition` prompt. After all
-  steps resolve, the coordinator's LLM synthesizes a coherent final answer from
-  every step's output, streamed through `text-delta` and TTS. Falls back to
-  concatenation when composition is absent.
 - **`"plan"` event** — fires on the conversation when the coordinator produces a
   plan, giving the application visibility into the execution strategy before it
   runs.
@@ -70,10 +66,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`understand` prompt tightened** — demotes `complete` to "use ONLY for simple
-  requests that need no agent work" and makes `plan` the default action.
-  Removes the "do not narrate your internal reasoning" constraint in favor of
-  "narrate your thinking briefly, then take exactly one action."
+- **`understand` prompt tightened** — encourages the model to speak the full
+  answer in its narration BEFORE emitting the tool call, eliminating the
+  separate composition LLM round-trip for the common case. The `composition`
+  field is still available for models that request it explicitly.
 - **`delegate` tool description** — updated to emphasize planning as the
   primary action, removing the "decide what should happen next" framing that
   encouraged the reactive loop.

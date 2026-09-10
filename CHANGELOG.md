@@ -28,7 +28,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Removed busy-wait loop** — `Orchestrator.whenIdle()` now uses a microtask check + promise resolve instead of `while(…) { Bun.sleep(1) }`, eliminating CPU pegging.
 - **`tsconfig.json` excludes `dist/`** — prevents stale build artifacts from polluting typecheck.
 
-## [Unreleased]
+## [0.0.5] - 2026-09-10
 
 ### Added
 
@@ -80,6 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   specialist output now streams through `agent-delta` instead of `text-delta`,
   so the top-level reply object (coalesced by `ConversationStream`) is not
   fragmented by intermediary agent narration.
+
+## [Unreleased]
 
 ## [0.0.3] - 2026-09-07
 

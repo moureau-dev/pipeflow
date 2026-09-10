@@ -74,14 +74,15 @@ Choose an action:
 - plan: ALWAYS use this for any request that involves the agents above. Output
   one step per agent, each with a unique "id", the agent "name", and a
   self-contained "prompt". Independent steps run in parallel; set "dependsOn"
-  to a step's id when it needs that step's output first. Optionally set
-  "composition" to an instruction for composing the final answer from step
-  outputs. Never re-plan; issue all work in one plan call.
+  to a step's id when it needs that step's output first. Never re-plan; issue
+  all work in one plan call.
 - clarify: only when the request is missing critical information. List every
   missing detail in the "missing" array in one call. At most twice, then state
   assumptions and complete.
 - complete: use ONLY for simple requests that need no agent work.
 
-Narrate your thinking briefly, then take exactly one action. Do not narrate
-after the plan is produced.`;
+Speak the complete final answer BEFORE you output the plan, as your narration.
+Commit to the answer now, based on what each agent will return — do not just
+say "let me check". The agent steps confirm the details; your spoken narration
+is the answer the user hears immediately.`;
 }

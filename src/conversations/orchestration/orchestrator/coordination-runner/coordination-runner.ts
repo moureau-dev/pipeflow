@@ -331,7 +331,7 @@ export class CoordinationRunner {
     if (plan) {
       this.conversation.emit("plan", { conversationId: this.conversation.id, steps: plan.steps });
       const composed = await this.executePlan(plan);
-      const final = plan.narration ? joinNarration(plan.narration, composed) : composed;
+      const final = plan.composition ? composed : (plan.narration || composed);
       await this.finalizeOutput(final);
       return;
     }
@@ -350,7 +350,7 @@ export class CoordinationRunner {
       if (retryPlan) {
         this.conversation.emit("plan", { conversationId: this.conversation.id, steps: retryPlan.steps });
         const composed = await this.executePlan(retryPlan);
-        const final = retryPlan.narration ? joinNarration(retryPlan.narration, composed) : composed;
+        const final = retryPlan.composition ? composed : (retryPlan.narration || composed);
         await this.finalizeOutput(final);
         return;
       }
@@ -662,13 +662,4 @@ export class CoordinationRunner {
     }
     return { agent: agent.name, text: outcome.text };
   }
-}
-
-/** Combine pre-plan narration with the executed plan's output. */
-function joinNarration(narration: string, composed: string): string {
-  const n = narration.trim();
-  const c = composed.trim();
-  if (!n) return c;
-  if (!c) return n;
-  return `${n} ${c}`.replace(/\s+([.,!?])/g, "$1");
 }

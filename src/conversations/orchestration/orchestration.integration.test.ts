@@ -105,9 +105,10 @@ describe("coordination", () => {
       expect(sub.parentGenerationId).toBe(coordinatorGen.id);
     }
     expect(coordinatorGen.status).toBe("completed");
-    // The generation accumulates the narration and the merged answer.
+    // The generation's final text is the composed answer; the narration
+    // ("Let me check both.") was streamed live while the plan ran.
     expect(coordinatorGen.text).toBe(
-      "Let me check both. I found a 3pm flight and your calendar is free.",
+      "I found a 3pm flight and your calendar is free.",
     );
 
     // Transcript: user turn, each specialist's work, then the merged answer.
@@ -116,7 +117,7 @@ describe("coordination", () => {
       "al: Book a flight and check my calendar.",
       "Travel Agent: Flight at 3pm.",
       "Calendar Agent: Free Tuesday afternoon.",
-      "Jarvis: Let me check both. I found a 3pm flight and your calendar is free.",
+      "Jarvis: I found a 3pm flight and your calendar is free.",
     ]);
 
     // The coordinator narrated while the specialists worked, then spoke

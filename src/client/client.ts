@@ -76,6 +76,7 @@ export interface PipeflowClientEventMap {
   turn: { conversationId: ConversationId; turn: Turn };
   transcript: { conversationId: ConversationId; entry: TranscriptEntry };
   generation: { conversationId: ConversationId; generation: Generation };
+  "generation-complete": { conversationId: ConversationId; generation: Generation };
   "tool-call": { conversationId: ConversationId; call: ToolCall };
   "tool-call-result": { conversationId: ConversationId; result: ToolCallResult };
   interrupt: { conversationId: ConversationId };
@@ -284,6 +285,7 @@ export class PipeflowClient {
       case "audio":
       case "audio-in":
       case "generation":
+      case "generation-complete":
       case "tool-call":
       case "tool-call-result":
       case "state": {

@@ -7,6 +7,7 @@ import type {
   LLMUsageCallback,
 } from "../../types";
 import type { FetchLike } from "../../../shared";
+import { anySignal } from "../openai-compatible";
 
 export interface ClaudeOptions {
   apiKey: string;
@@ -75,6 +76,7 @@ export class ClaudeLLM implements LLM {
   async *stream(request: LLMRequest): AsyncGenerator<LLMEvent> {
     const controller = new AbortController();
     this.streams.add(controller);
+    const signal = request.signal ? anySignal(controller.signal, request.signal) : controller.signal;
 
     try {
       const { system, wire } = mapMessages(request.messages);
@@ -105,7 +107,7 @@ export class ClaudeLLM implements LLM {
           ...(request.temperature !== undefined ? { temperature: request.temperature } : {}),
           stream: true,
         }),
-        signal: controller.signal,
+        signal,
       });
 
       if (!response.ok) {

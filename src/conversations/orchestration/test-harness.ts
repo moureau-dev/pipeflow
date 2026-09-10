@@ -32,6 +32,13 @@ export class FakeLLM implements LLM {
     const controller = new AbortController();
     this.controllers.add(controller);
     this.requests.push(request);
+    // Link external signal to internal controller so the orchestrator's
+    // per-conversation abort reaches this stream even when the LLM adapter
+    // doesn't pass request.signal through (e.g. Coordination.loop()).
+    if (request.signal) {
+      const onAbort = () => { controller.abort(); };
+      request.signal.addEventListener("abort", onAbort, { once: true });
+    }
     try {
       for await (const event of this.script(request, controller.signal)) {
         if (controller.signal.aborted) {

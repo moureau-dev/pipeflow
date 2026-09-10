@@ -23,6 +23,11 @@ export interface GenerationRequest {
   /** False once the run is stale (interrupt/stop); aborts the loop. */
   isCurrent(): boolean;
   /**
+   * External abort signal for this generation. Passed through to the LLM
+   * stream so only this conversation's stream is aborted on interrupt.
+   */
+  signal?: AbortSignal;
+  /**
    * Whether outgoing messages keep per-agent `name` fields on system and
    * assistant messages. Multi-agent conversations need them so the model can
    * tell which agent said what in the shared history. Single-agent
@@ -90,13 +95,15 @@ export class GenerationRunner {
         const toolCalls: LLMToolCall[] = [];
         let done = false;
 
-        // Single-agent conversations don't need per-agent `name` fields (see
-        // GenerationRequest.agentNames): strip them before every call, since
-        // the tool loop appends fresh messages between iterations. Never
-        // mutate the caller's array.
         const wireMessages = agentNames ? messages : withoutAgentNames(messages);
 
-        for await (const event of llm.stream({ messages: wireMessages, tools, temperature, maxTokens })) {
+        for await (const event of llm.stream({
+          messages: wireMessages,
+          tools,
+          temperature,
+          maxTokens,
+          signal: request.signal,
+        })) {
           if (!isCurrent()) return { text, status: "interrupted" };
           switch (event.type) {
             case "delta": {

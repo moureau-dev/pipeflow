@@ -14,13 +14,14 @@ It handles the plumbing between audio, speech-to-text, LLMs, text-to-speech, con
 
 ## Core Concepts
 
-Four independent concepts:
+Three independent concepts:
 
 * **Pipeflow** — the orchestrator that wires STT, LLM, and TTS together. Created with providers.
 * **Agent** — intelligence, context, and tools. Can run standalone (`agent.run()`) or participate in a conversation.
 * **Conversation** — a persistent realtime conversation with participants, turns, audio, and interruption handling.
 * **Tool** — application capabilities executed by your backend. `PipeflowTool` with Zod `schema.in` for model contract and `execute()` callback.
 * **Provider** — an implementation of STT, LLM, or TTS (Deepgram, DeepSeek, OpenRouter, OpenAI, Claude, Kokoro).
+* **Logger** — pluggable logging. Pass `logger` or `verbose: true` to `Pipeflow`. `ConsoleLogger` and `SilentLogger` exported from the main entry.
 
 An agent does not inherently own a conversation. A conversation does not require an agent. A provider should not leak into your application logic.
 
@@ -79,7 +80,7 @@ conversation.on("audio", ({ audio }) => {
 
 ```ts
 // Core
-import { Pipeflow, PipeflowTool } from "@moureau/pipeflow";
+import { Pipeflow, PipeflowTool, ConsoleLogger } from "@moureau/pipeflow";
 
 // Browser/Node client
 import { PipeflowClient, WebSocketProtocol } from "@moureau/pipeflow/client";
@@ -92,12 +93,35 @@ import { KokoroTTS } from "@moureau/pipeflow/providers";
 // Persistence
 import { SQLitePersistence } from "@moureau/pipeflow/persistence";
 
-// Transport
-import { /* adapters */ } from "@moureau/pipeflow/transport";
+// Transport (server adapters)
+import { BunServerAdapter, ConversationWebSocketServer } from "@moureau/pipeflow/transport";
+// Bring your own: implement ServerAdapter for socket.io, node-ws, etc.
 
 // Conversations (types, subpaths)
 import type { Conversation, ConversationEvent } from "@moureau/pipeflow/conversations";
 ```
+
+---
+
+## Logging
+
+Pipeflow has a pluggable logger interface injected at construction:
+
+```ts
+import { Pipeflow, ConsoleLogger } from "@moureau/pipeflow";
+
+// Shortcut — prints [pipeflow] prefix messages
+const pipeflow = new Pipeflow({ llm, verbose: true });
+
+// Or with a custom logger:
+import type { Logger } from "@moureau/pipeflow";
+const pipeflow = new Pipeflow({
+  llm,
+  logger: new ConsoleLogger("myapp"),
+});
+```
+
+The `Logger` interface has `info`, `warn`, `error`, `debug` methods. The default is a no-op `SilentLogger`.
 
 ---
 
@@ -159,6 +183,8 @@ conversation.on("turn", ({ userId, text }) => {});                // finalized p
 conversation.on("transcript", ({ userId, text }) => {});          // transcript entry
 conversation.on("audio", ({ userId, audio }) => {});              // generated audio to play
 conversation.on("generation", ({ userId, text }) => {});          // agent generation
+conversation.on("generation-complete", ({ generation }) => {});   // top-level generation finished
+conversation.on("text-delta", ({ text, agentName }) => {});       // streaming LLM deltas
 conversation.on("tool-call", ({ call }) => {});                   // every tool round-trip
 conversation.on("tool-call-result", ({ callId, result }) => {});  // tool execution result
 conversation.on("interrupt", () => {});
@@ -266,6 +292,30 @@ conversation.on("tool-call", async ({ call }) => {
 
 ---
 
+## Server Transport (Bun-agnostic, pluggable)
+
+Pipeflow bridges a `Conversation` to remote clients via a runtime-independent `ServerAdapter` interface. This works with Bun, Node `ws`, socket.io, or any other WebSocket library.
+
+```ts
+import { ConversationWebSocketServer, BunServerAdapter } from "@moureau/pipeflow/transport";
+
+const adapter = new BunServerAdapter({ port: 3000 });
+const server = new ConversationWebSocketServer({ conversation, adapter });
+await server.start();
+```
+
+You can bring your own adapter — implement the `ServerAdapter` interface with `start()`, `stop()`, and `onConnection()`:
+
+```ts
+import type { ServerAdapter, ServerClient } from "@moureau/pipeflow/transport";
+
+class MySocketIOAdapter implements ServerAdapter {
+  // implement start(), stop(), onConnection()
+}
+```
+
+---
+
 ## Meeting Transcription
 
 A conversation does not require an agent — Pipeflow works as a realtime transcription primitive.
@@ -273,7 +323,6 @@ A conversation does not require an agent — Pipeflow works as a realtime transc
 ```ts
 const conversation = await pipeflow.conversations.create();
 
-// Without an agent, start() attaches the orchestrator in transcription-only mode
 await conversation.start();
 
 await conversation.participate([
@@ -281,14 +330,12 @@ await conversation.participate([
   { userId: "bob", aliases: ["robert"] },
 ]);
 
-// Feed audio:
 discordVoice.onAudio((userId, audio) => {
   conversation.listen({ userId, audio });
 });
 
 await conversation.stop();
 
-// Retrieve transcript afterward:
 const transcript = await pipeflow.conversations.transcript(conversation.id);
 ```
 
@@ -320,18 +367,6 @@ const result = await notetaker.run({
 });
 ```
 
-Or the notetaker can retrieve the transcript itself through a tool:
-
-```ts
-const getTranscript = new PipeflowTool({
-  name: "get_transcript",
-  description: "Retrieve the meeting transcript.",
-  execute: async () => {
-    return pipeflow.conversations.transcript(conversation.id);
-  },
-});
-```
-
 ---
 
 ## Browser Client
@@ -344,9 +379,9 @@ import { PipeflowClient, WebSocketProtocol } from "@moureau/pipeflow/client";
 const client = new PipeflowClient({
   protocol: new WebSocketProtocol({
     url: "wss://api.example.com/conversations/abc",
-    token: () => localStorage.getItem("jwt"), // resolved on each connect()
+    token: () => localStorage.getItem("jwt"),
   }),
-  audio: { input: true }, // opt-in mic capture
+  audio: { input: true },
   reconnect: { maxAttempts: 5 },
   userId: "alice",
 });
@@ -354,23 +389,8 @@ const client = new PipeflowClient({
 client.on("turn", (e) => console.log(e.turn.text));
 client.on("audio", (e) => client.playAudio(e.audio));
 await client.connect();
-await client.sendText("hello"); // bypasses STT
+await client.sendText("hello");
 ```
-
-Events mirror the conversation surface (`start`, `stop`, `turn`, `transcript`, `partial-transcript`, `audio`, `generation`, `tool-call`, `tool-call-result`, `interrupt`, `error`, `state`). Outbound: `sendText()`, `sendAudio()`, `interrupt()`, `resolveToolCall()`. Playback is the caller's job — wire the `audio` event into your own `AudioContext`/`<audio>` queue or override `playAudio()`. Unknown message types are ignored, so the client stays forward-compatible.
-
-### Capture gate
-
-`audio.transform` gates or rewrites captured mic audio before it hits the wire — the seam for client-side VAD. Return a chunk to send it, `null` to drop it. It may be async: chunks are sent as the hook resolves and their `sequence` marks capture order, so the server reorders them before STT (see `Conversation.listen({ sequence })`). Applies only to captured audio; manual `sendAudio()` calls go out untouched.
-
-```ts
-audio: {
-  input: true,
-  transform: (chunk) => isSpeech(chunk) ? chunk : null, // your VAD
-}
-```
-
-The mic opens with `echoCancellation`, `noiseSuppression`, and `autoGainControl` on by default (overridable via `audio.constraints`) — without echo cancellation the mic re-captures the agent's own reply and barge-in self-triggers.
 
 `Protocol` is a small contract: `connect`, `close`, `send`, `onMessage`, `onStatus`, plus a `status` getter — bring your own transport (SSE, WebRTC, in-memory tests) without touching application code.
 
@@ -378,14 +398,16 @@ The mic opens with `echoCancellation`, `noiseSuppression`, and `autoGainControl`
 
 ## Providers
 
-| Interface | Provider | Package |
-|-----------|----------|---------|
+| Interface | Provider | Import path |
+|-----------|----------|-------------|
 | LLM | DeepSeek | `@moureau/pipeflow/providers` |
 | LLM | OpenRouter | `@moureau/pipeflow/providers` |
 | LLM | OpenAI | `@moureau/pipeflow/providers` |
 | LLM | Claude (Anthropic) | `@moureau/pipeflow/providers` |
 | STT | Deepgram | `@moureau/pipeflow/providers` |
+| STT | OpenRouter | `@moureau/pipeflow/providers` |
 | TTS | Kokoro | `@moureau/pipeflow/providers` |
+| TTS | OpenRouter | `@moureau/pipeflow/providers` |
 
 Providers are configured with their own credentials — Pipeflow itself does not hold an API key.
 
@@ -414,9 +436,10 @@ src/
 │   ├── conversation/    — Public realtime conversation API and lifecycle
 │   ├── orchestration/   — State machine: speech, transcription, turns, floor, generation, interruptions, tools, TTS
 │   └── transcription/   — Conversation transcription and transcript state
+├── logger/         — Pluggable logging interface and built-in adapters
 ├── persistence/    — Storage abstractions with adapters (in-memory, SQLite)
 ├── providers/      — Vendor-independent interfaces and adapters (STT, LLM, TTS)
-└── transport/      — Realtime communication (in-memory, designed for WebSocket/WebRTC)
+└── transport/      — Realtime communication adapters (in-memory, Bun, pluggable ServerAdapter)
 ```
 
 ### Realtime pipeline
@@ -432,13 +455,13 @@ Everything happens as a stream — Pipeflow does not wait for a complete recordi
 
 ## Exports
 
-| Import path | Description |
+| Import path | Exports |
 |---|---|
-| `@moureau/pipeflow` | Core: `Pipeflow`, `PipeflowTool`, `Agent` |
+| `@moureau/pipeflow` | Core: `Pipeflow`, `PipeflowTool`, `Agent`, `ConsoleLogger`, `SilentLogger`, Logger types |
 | `@moureau/pipeflow/client` | Browser/Node client: `PipeflowClient`, `WebSocketProtocol`, `Protocol` |
 | `@moureau/pipeflow/providers` | All provider adapters |
-| `@moureau/pipeflow/persistence` | Persistence adapters (`SQLitePersistence`) |
-| `@moureau/pipeflow/transport` | Transport adapters |
+| `@moureau/pipeflow/persistence` | Persistence adapters (`SQLitePersistence`, `MemoryPersistence`) |
+| `@moureau/pipeflow/transport` | Transport types, `MemoryTransport`, `BunServerAdapter`, `ConversationWebSocketServer`, `ServerAdapter`/`ServerClient` types |
 | `@moureau/pipeflow/conversations` | Conversation types and utilities |
 
 ---
@@ -451,6 +474,7 @@ Everything happens as a stream — Pipeflow does not wait for a complete recordi
 - **Conversations are persistent entities:** A `Conversation` is a runtime handle to a persistent conversation.
 - **Agents are independent:** An agent can participate in a conversation or simply be invoked with `run()`.
 - **Explicit boundaries:** Pipeflow owns orchestration. Your application owns logic. Providers own their services.
+- **Runtime independent:** Transport adapters are pluggable — Bun, Node `ws`, socket.io, or custom.
 - **Small public API:** `Pipeflow`, `Agent`, `Conversation`, `Tool` — everything else is replaceable implementation detail.
 
 ---
@@ -461,7 +485,7 @@ Everything happens as a stream — Pipeflow does not wait for a complete recordi
 git clone git@github.com:moureau-dev/pipeflow.git
 cd pipeflow
 bun install
-bun test              # unit tests
+bun test              # 562+ unit tests (44 files, text-only)
 bun run test:e2e      # end-to-end (requires API key in .env)
 bun run build         # transpile to dist/esm + dist/cjs + dist/types
 bun run typecheck
@@ -482,3 +506,5 @@ Default to Bun (not Node): `bun <file>`, `bun test`, `bun run build`, `bunx tsc`
 | Assuming `stop()` also retrieves the transcript | `stop()` and `transcript()` are separate — retrieve after stop |
 | Using a provider key without configuring it on the provider instance | Each provider takes its own credentials; Pipeflow does not hold keys |
 | Waiting for `start()` to finish before adding participants | `participate()` works before and after `start()` |
+| Hardcoding Bun in server transport | Use `ServerAdapter` interface — swap Bun for node-ws, socket.io, etc. |
+| Ignoring logger | Add `verbose: true` or pass a custom `Logger` to diagnose issues |

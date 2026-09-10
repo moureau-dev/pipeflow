@@ -934,7 +934,7 @@ describe("Orchestrator", () => {
     await harness.conversation.stop();
 
     expect(session.ended).toBe(1);
-    expect(harness.llm.stopCalls.length).toBeGreaterThan(0);
+    expect(harness.conversation.status).toBe("stopped");
   });
 });
 

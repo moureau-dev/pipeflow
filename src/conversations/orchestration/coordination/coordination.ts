@@ -60,6 +60,8 @@ export interface CoordinationRuntime {
   speak(sentence: string): void;
   /** True once an interrupt/stop has cancelled this run. */
   isCancelled(): boolean;
+  /** Abort signal for the current coordination run. Passed to the LLM stream. */
+  readonly signal?: AbortSignal;
   /** Throw if the run exceeded the coordination step budget. */
   checkBudget(): void;
 }
@@ -447,6 +449,7 @@ export class Coordination {
         messages: state.messages,
         tools: [this.toolDefinition()],
         maxTokens: this.maxTokens,
+        signal: this.runtime.signal,
       })) {
         if (this.runtime.isCancelled()) throw new CoordinationCancelled();
         switch (event.type) {

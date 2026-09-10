@@ -17,9 +17,26 @@ It handles the plumbing between audio, speech-to-text, LLMs, text-to-speech, con
 
 ## Status
 
-🚧 **Early development**
+✅ **Production ready** for text-only, multi-conversation, multi-agent,
+multi-tool workloads. The core engine (orchestrator, coordination, tools,
+persistence, logging, transport) is stable with 560+ passing tests.
 
-The API is evolving and should be considered experimental.
+> Voice and audio pipelines (STT/TTS) are functional but receive less
+> production hardening than the text path. Audio providers, latency budgets,
+> and speech-related adapters are still evolving.
+
+| Capability | Status |
+|---|---|
+| Text-only agents & conversations | ✅ Production ready |
+| Multiple concurrent conversations | ✅ Each has isolated state & abort signal |
+| Multiple agents per conversation | ✅ With `understand` coordination |
+| Tools (auto-execute, parallel, timeout) | ✅ Production ready |
+| Streaming text responses | ✅ Production ready |
+| Browser/Node client SDK | ✅ Production ready |
+| Pluggable logger & error handling | ✅ Production ready |
+| Server transport (WS, socket.io, etc.) | ✅ Pluggable via `ServerAdapter` |
+| Persistence (SQLite, in-memory) | ✅ Production ready |
+| Voice / STT / TTS | ⚠️ Functional, evolving
 
 ## Current vs. designed for
 

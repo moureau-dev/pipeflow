@@ -83,6 +83,13 @@ export interface LLMRequest {
   maxTokens?: number;
   /** How tools are encoded on the wire. Default `native`. */
   toolMode?: ToolMode;
+  /**
+   * External abort signal. When provided, the stream will be aborted when
+   * this signal fires — without affecting other streams on the same LLM
+   * instance. This is how orchestrators interrupt their own conversation's
+   * generation without poisoning other conversations sharing the same LLM.
+   */
+  signal?: AbortSignal;
 }
 
 /**

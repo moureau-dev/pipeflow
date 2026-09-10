@@ -17,6 +17,7 @@ import { GenerationRunner } from "./generation/generation";
 import { SpeechPipeline } from "./speech/speech";
 import { ToolCallManager } from "./tools/tools";
 import { CoordinationRunner } from "./coordination-runner/coordination-runner";
+import type { Logger } from "../../../logger/types";
 
 /**
  * Extra attempts after a transient provider failure that produced no output.
@@ -91,6 +92,7 @@ export interface OrchestratorOptions {
    * speech pipeline; see `SpeechPipelineOptions.maxConcurrentRequests`.
    */
   maxConcurrentTtsRequests?: number;
+  logger?: Logger;
 }
 
 interface SttSessionEntry {
@@ -130,6 +132,7 @@ export class Orchestrator {
   private readonly historyWindow: HistoryWindow | false;
   private readonly temperature: number | undefined;
   private readonly maxTokens: number | undefined;
+  private readonly logger: Logger;
 
   private readonly history: ConversationHistory;
   private readonly speech: SpeechPipeline;
@@ -146,6 +149,8 @@ export class Orchestrator {
   private pendingTurns = 0;
   private pendingGenerations = 0;
   private turnSequence = 0;
+  private idleResolve: (() => void) | null = null;
+  private currentAbortController?: AbortController;
 
   constructor(options: OrchestratorOptions) {
     const agents = options.agents ?? [];
@@ -166,6 +171,7 @@ export class Orchestrator {
     this.historyWindow = options.historyWindow ?? { maxTurns: 5, maxChars: 4_000 };
     this.temperature = options.temperature;
     this.maxTokens = options.maxTokens;
+    this.logger = options.logger ?? { info() {}, warn() {}, error() {}, debug() {} } as Logger;
 
     this.history = new ConversationHistory();
     this.speech = new SpeechPipeline({
@@ -176,10 +182,6 @@ export class Orchestrator {
         ? { maxConcurrentRequests: options.maxConcurrentTtsRequests }
         : {}),
     });
-    // The registry spans every agent's tools, so top-level generations and
-    // delegated sub-generations both auto-execute the tools the routed agent
-    // actually registered (the definitions each LLM sees are scoped to that
-    // agent; on a name collision the last agent wins).
     const toolRegistry = new Map<string, Tool<never, unknown>>();
     for (const agent of agents) {
       for (const tool of agent.tools) toolRegistry.set(tool.name, tool);
@@ -204,6 +206,8 @@ export class Orchestrator {
       maxTokens: this.maxTokens,
       currentEpoch: () => this.epoch,
       isCurrent: (epoch) => this.started && epoch === this.epoch,
+      currentSignal: () => this.currentAbortController?.signal,
+      logger: this.logger,
     });
     this.coordination.register(options.coordinations ?? {}, agents);
   }
@@ -215,6 +219,7 @@ export class Orchestrator {
   async start(): Promise<void> {
     if (this.started) return;
     this.started = true;
+    this.logger.info("orchestrator started", { conversationId: this.conversation.id });
 
     if (this.persistence) {
       const [turns, generations] = await Promise.all([
@@ -222,6 +227,11 @@ export class Orchestrator {
         this.persistence.listGenerations(this.conversation.id),
       ]);
       this.history.rehydrate(turns, generations, this.conversation);
+      this.logger.debug("history rehydrated", {
+        conversationId: this.conversation.id,
+        turns: turns.length,
+        generations: generations.length,
+      });
     }
 
     this.unsubscribers.push(
@@ -236,9 +246,11 @@ export class Orchestrator {
   async stop(): Promise<void> {
     if (!this.started) return;
     this.started = false;
+    this.logger.info("orchestrator stopping", { conversationId: this.conversation.id });
     this.epoch++;
+    this.currentAbortController?.abort();
+    this.currentAbortController = undefined;
     this.coordination.cancel();
-    this.stopLlms();
     this.speech.stop();
     this.tools.cancelAll("conversation stopped");
     for (const unsubscribe of this.unsubscribers) unsubscribe();
@@ -246,31 +258,32 @@ export class Orchestrator {
     const sessions = [...this.sttSessions.values()];
     this.sttSessions.clear();
     for (const { session } of sessions) {
-      await session.end().catch(() => {});
+      await session.end().catch((err) => {
+        this.logger.error("failed to end STT session", { error: String(err) });
+      });
     }
+    this.checkIdle();
   }
 
   /**
    * Resolve once every queued and in-flight turn and generation has
-   * finished processing. Useful for tests and graceful shutdown.
+   * finished processing. Uses event notifications instead of polling.
    */
   async whenIdle(): Promise<void> {
-    for (;;) {
-      while (
-        this.pendingTurns > 0 ||
-        this.pendingGenerations > 0 ||
-        this.generating
-      ) {
-        await Bun.sleep(1);
-      }
-      // Give work scheduled in the same microtask turn a chance to register.
-      await Promise.resolve();
-      if (
-        this.pendingTurns === 0 &&
-        this.pendingGenerations === 0 &&
-        !this.generating
-      ) {
-        return;
+    if (this.pendingTurns === 0 && this.pendingGenerations === 0 && !this.generating) return;
+    await Promise.resolve();
+    if (this.pendingTurns === 0 && this.pendingGenerations === 0 && !this.generating) return;
+    return new Promise((resolve) => {
+      this.idleResolve = resolve;
+    });
+  }
+
+  private checkIdle(): void {
+    if (this.pendingTurns === 0 && this.pendingGenerations === 0 && !this.generating) {
+      if (this.idleResolve) {
+        const resolve = this.idleResolve;
+        this.idleResolve = null;
+        resolve();
       }
     }
   }
@@ -356,46 +369,37 @@ export class Orchestrator {
         text: turn.text,
       });
       this.history.addUserTurn(turn, this.conversation);
+      this.logger.debug("turn processed", {
+        conversationId: this.conversation.id,
+        participant: turn.participantName,
+        text: turn.text.slice(0, 100),
+      });
       if (this.agents.length === 0) return;
 
       if (this.coordination.hasPending()) {
-        // The user answered a pending coordination question: resume it with
-        // this turn instead of starting a fresh generation.
         this.enqueueCoordinationRun(() => this.coordination.resume(turn));
         return;
       }
 
       if (this.agents.length === 1 || findAddressedAgent(this.agents, turn.text)) {
-        // Single-agent conversations, and turns that explicitly address an
-        // agent by name/alias, route straight to that agent.
         this.queueGeneration(turn);
         return;
       }
 
-      // Otherwise the built-in `understand` coordination decides: delegate to
-      // agents, ask the user, or answer directly.
       this.enqueueCoordinationRun(() => this.coordination.runDefault(turn));
     } finally {
       this.pendingTurns--;
+      this.checkIdle();
     }
   }
 
   private onInterrupt(): void {
     this.epoch++;
+    this.currentAbortController?.abort();
+    this.currentAbortController = undefined;
     this.coordination.cancel();
-    this.stopLlms();
     this.speech.stop();
     this.tools.cancelAll("interrupted");
-  }
-
-  /** Cancel every LLM in play: the shared one and each agent's own. */
-  private stopLlms(): void {
-    const seen = new Set<LLM>();
-    if (this.llm) seen.add(this.llm);
-    for (const agent of this.agents) {
-      if (agent.llm) seen.add(agent.llm);
-    }
-    for (const llm of seen) llm.stop();
   }
 
   private onProviderError(error: Error): void {
@@ -411,33 +415,36 @@ export class Orchestrator {
     const epoch = this.epoch;
     this.generationChain = this.generationChain.then(async () => {
       if (this.epoch !== epoch) {
-        // Superseded by an interruption while queued.
         this.pendingGenerations--;
+        this.checkIdle();
         return;
       }
       try {
         await this.generate(turn);
       } finally {
         this.pendingGenerations--;
+        this.checkIdle();
       }
     });
   }
 
   private async generate(turn: Turn): Promise<void> {
     if (this.agents.length === 0) return;
-    // The coordinator routes this turn to an agent by name/alias, falling
-    // back to the first agent in the roster.
     const agent = pickAgent(this.agents, turn.text);
     if (!agent) return;
-    // Prefer the routed agent's own LLM so agents with different providers
-    // keep their intelligence; fall back to the shared LLM.
     const llm = agent.llm ?? this.llm;
     if (!llm) return;
     this.generating = true;
+    this.logger.info("generation started", {
+      conversationId: this.conversation.id,
+      agent: agent.name,
+      turnId: turn.id,
+    });
     try {
       await this.runGeneration(this.epoch, turn, agent, llm);
     } finally {
       this.generating = false;
+      this.checkIdle();
     }
   }
 
@@ -447,6 +454,7 @@ export class Orchestrator {
     agent: Agent,
     llm: LLM,
   ): Promise<void> {
+    this.currentAbortController = new AbortController();
     const generationId = crypto.randomUUID();
     await this.conversation.pushGeneration({
       id: generationId,
@@ -469,11 +477,6 @@ export class Orchestrator {
     }
     messages.push(...this.history.windowed(this.historyWindow));
 
-    // Run the generation, retrying transient provider failures that happen
-    // before anything was produced (e.g. the Bedrock-via-OpenRouter mid-stream
-    // abort nova models show as "provider aborted the stream"). Retrying is
-    // safe only when nothing was streamed and no tool ran — otherwise the
-    // user would hear the partial reply twice or a tool would re-execute.
     let outcome: Awaited<ReturnType<GenerationRunner["run"]>>;
     for (let attempt = 0; ; attempt++) {
       outcome = await this.generation.run({
@@ -485,10 +488,7 @@ export class Orchestrator {
         maxTokens: this.maxTokens,
         maxToolIterations: this.maxToolIterations,
         isCurrent: () => this.epoch === epoch,
-        // With one agent every assistant turn is the same speaker, so the
-        // per-agent `name` fields are redundant — and some providers render
-        // them as role headers ("Scout:") that weaker models imitate by
-        // prefixing every reply with the agent's name.
+        signal: this.currentAbortController?.signal,
         agentNames: this.agents.length > 1,
         onDelta: (delta) => this.speech.feed(delta, epoch),
         resolveToolCalls: (calls) => this.tools.resolveCalls(calls),
@@ -501,20 +501,24 @@ export class Orchestrator {
         (outcome.toolRounds ?? 0) === 0 &&
         isTransientProviderError(outcome.error);
       if (!retryable) break;
+      this.logger.warn("retrying transient provider error", {
+        attempt: attempt + 1,
+        error: String(outcome.error),
+      });
     }
 
-    // A stale run (interrupt/stop) is discarded entirely — the conversation
-    // already marked the generation cancelled.
     if (this.epoch !== epoch) return;
-    if (outcome.status === "interrupted") return;
+    if (outcome.status === "interrupted") {
+      this.logger.info("generation interrupted", { agent: agent.name });
+      return;
+    }
 
     if (outcome.status === "error") {
+      this.logger.error("generation failed", { agent: agent.name, error: String(outcome.error) });
       this.conversation.emit("error", {
         conversationId: this.conversation.id,
         error: outcome.error instanceof Error ? outcome.error : new Error(String(outcome.error)),
       });
-      // Finalize whatever was generated so the conversation state stays
-      // consistent even though the provider failed.
       await this.conversation.completeGeneration(outcome.text);
       if (outcome.text) {
         await this.conversation.pushTranscript({
@@ -538,6 +542,10 @@ export class Orchestrator {
       text: outcome.text,
     });
     this.history.addAssistant(agent.name, outcome.text);
+    this.logger.info("generation completed", {
+      agent: agent.name,
+      chars: outcome.text.length,
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -548,11 +556,13 @@ export class Orchestrator {
     this.pendingGenerations++;
     this.generationChain = this.generationChain.then(async () => {
       this.generating = true;
+      this.currentAbortController = new AbortController();
       try {
         await run();
       } finally {
         this.generating = false;
         this.pendingGenerations--;
+        this.checkIdle();
       }
     });
   }

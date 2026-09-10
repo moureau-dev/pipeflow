@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Pluggable logging** — `Pipeflow` accepts `logger` (implements `Logger` interface) or `verbose: true` shorthands. Ships `ConsoleLogger` and `SilentLogger`. The logger propagates through `Conversations`, `Conversation`, `Orchestrator`, and `CoordinationRunner`, logging creation, starts, stops, generation status, errors, and key lifecycle events. Exported from `@moureau/pipeflow`.
+- **Server transport abstraction** — `ServerAdapter`/`ServerClient` interfaces let any runtime (Bun, Node `ws`, socket.io) bridge `Conversation` events to remote clients. `BunServerAdapter` wraps `Bun.serve()`; `ConversationWebSocketServer` is the runtime-independent bridge. Exported from `@moureau/pipeflow/transport`.
+- **Per-conversation LLM abort isolation** — `LLMRequest.signal` allows each orchestrator to abort its own generation without affecting other conversations sharing the same LLM instance. `onInterrupt()` and `stop()` now use this per-conversation `AbortController` instead of calling `llm.stop()` (which previously aborted all streams on that LLM instance, regardless of which conversation owned them).
+- **Event-driven `whenIdle()`** — replaced busy-wait polling with a promise-based notification, eliminating CPU spin during test idle detection.
+
+### Fixed
+
+- **Cross-conversation interrupt contamination** — interrupting one conversation no longer cancels generations in other conversations sharing the same LLM instance. Previously `onInterrupt` called `llm.stop()` which aborted every in-flight stream on that LLM instance. Now each orchestrator owns its own `AbortController` which only aborts its own streams.
+- **Silent persistence errors** — `.catch(() => {})` replaced with `.catch((err) => logger.error(...))` on generation timing writes, so failures surface in logs instead of being silently swallowed.
+
+### Changed
+
+- **Removed busy-wait loop** — `Orchestrator.whenIdle()` now uses a microtask check + promise resolve instead of `while(…) { Bun.sleep(1) }`, eliminating CPU pegging.
+- **`tsconfig.json` excludes `dist/`** — prevents stale build artifacts from polluting typecheck.
+
 ## [0.0.3] - 2026-09-07
 
 ### Added

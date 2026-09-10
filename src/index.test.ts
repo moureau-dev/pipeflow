@@ -7,6 +7,8 @@ import {
   Tool,
   Transcription,
   TranscriptEntry,
+  ConsoleLogger,
+  SilentLogger,
 } from "./index";
 import {
   DeepSeekLLM,
@@ -35,6 +37,13 @@ describe("public exports", () => {
     expect(typeof Transcription).toBe("function");
     expect(typeof TranscriptEntry).toBe("function");
     expect(typeof Tool).toBe("function");
+  });
+
+  test("logger utilities are exported from the main entry", () => {
+    expect(typeof ConsoleLogger).toBe("function");
+    expect(typeof SilentLogger).toBe("function");
+    const logger = new ConsoleLogger("test");
+    expect(typeof logger.info).toBe("function");
   });
 
   test("provider and adapter implementations are exported from subpaths", () => {

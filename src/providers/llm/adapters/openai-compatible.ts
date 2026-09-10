@@ -39,7 +39,14 @@ export interface OpenAICompatibleStreamParams {
   /** Injectable fetch implementation, mainly for tests. */
   fetchImpl: FetchLike;
   request: LLMRequest;
+  /** Internal abort signal — used by the adapter's own stop(). */
   signal: AbortSignal;
+  /**
+   * External per-stream abort signal. When provided alongside the internal
+   * signal, the stream aborts when EITHER fires. This allows per-conversation
+   * interrupt without affecting other conversations sharing the same LLM.
+   */
+  externalSignal?: AbortSignal;
   /** Extra headers merged into the request (e.g. attribution headers). */
   extraHeaders?: Record<string, string>;
   /** Extra body fields merged after the standard ones. */
@@ -261,6 +268,7 @@ export async function* openAICompatibleStream(
     fetchImpl,
     request,
     signal,
+    externalSignal,
     extraHeaders,
     extraBody,
     label,
@@ -270,6 +278,7 @@ export async function* openAICompatibleStream(
   } = params;
 
   onTiming?.("request-start");
+  const wireSignal = externalSignal ? anySignal(signal, externalSignal) : signal;
   // Precedence: the per-request override wins, then the adapter default, then
   // native.
   const toolMode = request.toolMode ?? params.toolMode ?? "native";
@@ -346,7 +355,7 @@ export async function* openAICompatibleStream(
       stream_options: { include_usage: true },
       ...extraBody,
     }),
-    signal,
+    signal: wireSignal,
   });
 
   if (!response.ok) {
@@ -376,7 +385,7 @@ export async function* openAICompatibleStream(
   // content and surface them as `reasoning` (stateful across chunk splits).
   const thinking = inlineThinking();
 
-  for await (const chunk of parseSSE(response.body, signal, onTiming, idleTimeoutMs, label)) {
+  for await (const chunk of parseSSE(response.body, wireSignal, onTiming, idleTimeoutMs, label)) {
     const choice = chunk.choices?.[0];
 
     if (chunk.error) {
@@ -547,7 +556,7 @@ export async function* openAICompatibleStream(
 /**
  * Parse an SSE byte stream into JSON events. Supports both LF and CRLF
  * framing, ignores comments and malformed frames, and stops at `[DONE]`.
- * Aborts with an `AbortError` once the signal fires.
+ * Aborts with an `AbortError` once any of the signals fires.
  */
 async function* parseSSE(
   body: ReadableStream<Uint8Array>,
@@ -626,4 +635,22 @@ async function* parseSSE(
       }
     }
   }
+}
+
+/**
+ * Combine multiple AbortSignals into one: the returned signal fires when
+ * ANY of the source signals fire. Avoids allocating a controller when there
+ * is only one signal.
+ */
+export function anySignal(...signals: AbortSignal[]): AbortSignal {
+  if (signals.length === 1) return signals[0]!;
+  const controller = new AbortController();
+  for (const signal of signals) {
+    if (signal.aborted) {
+      controller.abort(signal.reason);
+      return controller.signal;
+    }
+    signal.addEventListener("abort", () => controller.abort(signal.reason), { once: true });
+  }
+  return controller.signal;
 }

@@ -18,6 +18,7 @@ import { buildUnderstandPrompt, findAgentByName } from "../routing/routing";
 import type { GenerationRunner } from "../generation/generation";
 import type { SpeechPipeline } from "../speech/speech";
 import type { ToolCallManager } from "../tools/tools";
+import type { Logger } from "../../../../logger/types";
 
 export interface CoordinationRunnerOptions {
   conversation: Conversation;
@@ -40,6 +41,9 @@ export interface CoordinationRunnerOptions {
   currentEpoch(): number;
   /** True while the orchestrator is started and the epoch is current. */
   isCurrent(epoch: number): boolean;
+  /** Abort signal for the current coordination run. */
+  currentSignal?(): AbortSignal | undefined;
+  logger?: Logger;
 }
 
 /** A coordination execution parked while waiting for the user to answer. */
@@ -59,9 +63,7 @@ interface PendingExecution {
  * the coordination generation records.
  */
 export class CoordinationRunner {
-  /** Coordinations registered by name (the key is the coordination's name). */
   readonly coordinations: Record<string, Coordination> = {};
-  /** The built-in `understand` coordination, when one is active. */
   understand: Coordination | null = null;
 
   private readonly conversation: Conversation;
@@ -78,6 +80,8 @@ export class CoordinationRunner {
   private readonly maxTokens: number | undefined;
   private readonly currentEpoch: () => number;
   private readonly isCurrent: (epoch: number) => boolean;
+  private readonly currentSignal: () => AbortSignal | undefined;
+  private readonly logger: Logger;
 
   private coordinationEpoch = 0;
   private coordinationStepCount = 0;
@@ -99,6 +103,8 @@ export class CoordinationRunner {
     this.maxTokens = options.maxTokens;
     this.currentEpoch = options.currentEpoch;
     this.isCurrent = options.isCurrent;
+    this.currentSignal = options.currentSignal ?? (() => undefined);
+    this.logger = options.logger ?? { info() {}, warn() {}, error() {}, debug() {} } as Logger;
   }
 
   /**
@@ -145,6 +151,10 @@ export class CoordinationRunner {
     const understand = this.understand;
     const llm = this.llm();
     if (!understand || !llm) return;
+    this.logger.info("coordination runDefault started", {
+      conversationId: this.conversation.id,
+      turn: turn.text.slice(0, 100),
+    });
     this.coordinationEpoch = this.currentEpoch();
     this.coordinationStepCount = 0;
     this.coordinationRunId = crypto.randomUUID();
@@ -158,14 +168,13 @@ export class CoordinationRunner {
     });
 
     try {
-      // The current turn is already in history, so no separate input message.
       const output = await understand.run();
       await this.finalizeOutput(String(output));
     } catch (error) {
       if (error instanceof CoordinationSuspension) {
         await this.recordSuspension(error);
       } else if (error instanceof CoordinationCancelled) {
-        // Discarded by an interrupt — nothing to finalize.
+        this.logger.info("coordination cancelled", { conversationId: this.conversation.id });
       } else {
         this.emitError(error);
       }
@@ -242,8 +251,6 @@ export class CoordinationRunner {
   runtime(): CoordinationRuntime {
     const runner = this;
     return {
-      // Getters: read the current state at call time (the coordinations are
-      // built after the runtime object is created).
       get agents() {
         return runner.agents();
       },
@@ -255,6 +262,9 @@ export class CoordinationRunner {
       },
       get history() {
         return runner.history.windowed(runner.historyWindow);
+      },
+      get signal() {
+        return runner.currentSignal();
       },
       delegateAgentTasks: (tasks) => this.delegateAgentTasks(tasks),
       askUser: (frame, question) => this.askUser(frame, question),
@@ -410,6 +420,7 @@ export class CoordinationRunner {
       maxTokens: this.maxTokens,
       maxToolIterations: this.maxToolIterations,
       isCurrent: () => this.isCurrent(epoch),
+      signal: this.currentSignal(),
       onDelta: (delta, textBefore) => {
         if (textBefore.length === 0) this.conversation.noteTiming("firstToken", id);
       },

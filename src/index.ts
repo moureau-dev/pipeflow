@@ -62,3 +62,7 @@ export type { LLM, LLMMessage } from "./providers/llm/types";
 export type { STT } from "./providers/stt/types";
 export type { TTS } from "./providers/tts/types";
 export type { Persistence } from "./persistence/persistence";
+
+// Logger
+export type { Logger } from "./logger/types";
+export { ConsoleLogger, SilentLogger } from "./logger/console";

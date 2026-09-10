@@ -22,6 +22,7 @@ import {
   type TranscriptEntryInput,
 } from "../transcription/transcription";
 import type { ToolCall, ToolCallResult } from "../types";
+import type { Logger } from "../../logger/types";
 
 /** Ensure a generation carries a timing record, initialized from its start. */
 function initTiming(generation: Generation): GenerationTiming {
@@ -42,6 +43,7 @@ export interface ConversationOptions {
   id: ConversationId;
   agents?: Agent[];
   persistence?: Persistence;
+  logger?: Logger;
   /**
    * STT provider used to attach realtime processing automatically on
    * `start()`.
@@ -144,6 +146,7 @@ export class Conversation {
   readonly agents: readonly Agent[];
   readonly transcription: Transcription;
   readonly state: ConversationState;
+  readonly logger: Logger;
   private readonly persistence: Persistence | undefined;
   private readonly stt: STT | undefined;
   private readonly tts: TTS | undefined;
@@ -170,6 +173,7 @@ export class Conversation {
     this.audioReorderMs = options.audioReorderMs ?? 100;
     this.transcription = new Transcription(this.id);
     this.state = createConversationState();
+    this.logger = options.logger ?? { info() {}, warn() {}, error() {}, debug() {} } as Logger;
   }
 
   get status(): ConversationStatus {
@@ -381,10 +385,10 @@ export class Conversation {
    */
   interrupt(): void {
     const cancelled = this.cancelCurrentGeneration();
-    // Persist asynchronously: interruption must stay synchronous for the
-    // realtime path.
     if (cancelled) {
-      void this.persistence?.appendGeneration(this.id, cancelled).catch(() => {});
+      this.persistence?.appendGeneration(this.id, cancelled).catch((err) => {
+        this.logger.error("failed to persist cancelled generation", { error: String(err), conversationId: this.id });
+      });
     }
     this.emit("interrupt", { conversationId: this.id });
     this.emitState();
@@ -433,7 +437,9 @@ export class Conversation {
       const timing = initTiming(generation);
       if (timing.firstAudioAt === undefined) {
         timing.firstAudioAt = Date.now();
-        void this.persistence?.appendGeneration(this.id, generation).catch(() => {});
+        this.persistence?.appendGeneration(this.id, generation).catch((err) => {
+          this.logger.error("failed to persist audio timing", { error: String(err), conversationId: this.id });
+        });
         this.emitState();
       }
     }
@@ -493,7 +499,9 @@ export class Conversation {
     const field = timingField[point];
     if (timing[field] !== undefined) return;
     timing[field] = Date.now();
-    void this.persistence?.appendGeneration(this.id, generation).catch(() => {});
+    this.persistence?.appendGeneration(this.id, generation).catch((err) => {
+      this.logger.error("failed to persist timing point", { error: String(err), conversationId: this.id });
+    });
     this.emitState();
   }
 

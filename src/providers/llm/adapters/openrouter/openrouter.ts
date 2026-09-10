@@ -86,14 +86,10 @@ export class OpenRouterLLM implements LLM {
   }
 
   async *stream(request: LLMRequest): AsyncGenerator<LLMEvent> {
-    // Multiple generations can stream concurrently (e.g. delegated
-    // sub-agents); each gets its own controller, and stop() aborts them all.
     const controller = new AbortController();
     this.streams.add(controller);
 
     try {
-      // OpenRouter credits app usage on its leaderboard from HTTP-Referer
-      // (defaulting to moureau.dev) and X-Title (always `pipeflow`).
       yield* openAICompatibleStream({
         baseUrl: this.baseUrl,
         apiKey: this.apiKey,
@@ -101,6 +97,7 @@ export class OpenRouterLLM implements LLM {
         fetchImpl: this.fetchImpl,
         request,
         signal: controller.signal,
+        externalSignal: request.signal,
         extraHeaders: {
           "http-referer": this.appUrl,
           "x-title": "pipeflow",

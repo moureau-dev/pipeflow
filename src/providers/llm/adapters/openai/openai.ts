@@ -69,8 +69,6 @@ export class OpenAILLM implements LLM {
   }
 
   async *stream(request: LLMRequest): AsyncGenerator<LLMEvent> {
-    // Multiple generations can stream concurrently (e.g. delegated
-    // sub-agents); each gets its own controller, and stop() aborts them all.
     const controller = new AbortController();
     this.streams.add(controller);
 
@@ -82,6 +80,7 @@ export class OpenAILLM implements LLM {
         fetchImpl: this.fetchImpl,
         request,
         signal: controller.signal,
+        externalSignal: request.signal,
         label: "OpenAI",
         onTiming: this.onTiming,
         idleTimeoutMs: this.idleTimeoutMs,

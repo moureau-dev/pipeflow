@@ -69,8 +69,6 @@ export class DeepSeekLLM implements LLM {
   }
 
   async *stream(request: LLMRequest): AsyncGenerator<LLMEvent> {
-    // Multiple generations can stream concurrently (e.g. delegated
-    // sub-agents); each gets its own controller, and stop() aborts them all.
     const controller = new AbortController();
     this.streams.add(controller);
 
@@ -82,8 +80,7 @@ export class DeepSeekLLM implements LLM {
         fetchImpl: this.fetchImpl,
         request,
         signal: controller.signal,
-        // Reasoning models default to enabled thinking; disable it so the
-        // adapter behaves uniformly on deepseek-chat.
+        externalSignal: request.signal,
         extraBody: { thinking: { type: "disabled" } },
         label: "DeepSeek",
         onTiming: this.onTiming,

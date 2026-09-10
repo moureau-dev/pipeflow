@@ -5,6 +5,8 @@ import type { Persistence } from "../persistence/persistence";
 import type { LLM } from "../providers/llm/types";
 import type { STT } from "../providers/stt/types";
 import type { TTS } from "../providers/tts/types";
+import type { Logger } from "../logger/types";
+import { ConsoleLogger } from "../logger/console";
 
 export interface PipeflowOptions {
   llm?: LLM;
@@ -19,6 +21,19 @@ export interface PipeflowOptions {
    * `pipeflow.conversations.create()`.
    */
   autoExecuteTools?: boolean;
+  /**
+   * Logger instance. Defaults to a no-op logger. Set to
+   * `new ConsoleLogger("pipeflow")` for console output.
+   */
+  logger?: Logger;
+  /**
+   * Enable console logging. Shorthand for `logger: new ConsoleLogger(label)`.
+   */
+  verbose?: boolean;
+  /**
+   * Label used when `verbose` is true. Defaults to "pipeflow".
+   */
+  logLabel?: string;
 }
 
 /**
@@ -35,17 +50,20 @@ export class Pipeflow {
   readonly stt: STT | undefined;
   readonly tts: TTS | undefined;
   readonly conversations: Conversations;
+  readonly logger: Logger;
 
   constructor(options: PipeflowOptions = {}) {
     this.llm = options.llm;
     this.stt = options.stt;
     this.tts = options.tts;
+    this.logger = resolveLogger(options);
     const persistence = options.persistence ?? new MemoryPersistence();
     this.conversations = new Conversations({
       persistence,
       stt: options.stt,
       tts: options.tts,
       autoExecuteTools: options.autoExecuteTools,
+      logger: this.logger,
     });
   }
 
@@ -56,4 +74,10 @@ export class Pipeflow {
   agent(options: Omit<AgentOptions, "llm"> & { llm?: LLM }): Agent {
     return new Agent({ ...options, llm: options.llm ?? this.llm });
   }
+}
+
+function resolveLogger(options: PipeflowOptions): Logger {
+  if (options.logger) return options.logger;
+  if (options.verbose) return new ConsoleLogger(options.logLabel ?? "pipeflow");
+  return { info() {}, warn() {}, error() {}, debug() {} } as Logger;
 }

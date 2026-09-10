@@ -5,6 +5,7 @@ import type { TTS } from "../providers/tts/types";
 import type { ConversationId } from "./types";
 import type { TranscriptEntry } from "./transcription/transcription";
 import { Conversation } from "./conversation/conversation";
+import type { Logger } from "../logger/types";
 
 export interface CreateConversationOptions {
   agents?: Agent[];
@@ -38,6 +39,7 @@ export interface ConversationsOptions {
    * (default `true`). See `CreateConversationOptions.autoExecuteTools`.
    */
   autoExecuteTools?: boolean;
+  logger?: Logger;
 }
 
 /**
@@ -49,12 +51,14 @@ export class Conversations {
   private readonly stt: STT | undefined;
   private readonly tts: TTS | undefined;
   private readonly autoExecuteTools: boolean;
+  private readonly logger: Logger;
 
   constructor(options: ConversationsOptions) {
     this.persistence = options.persistence;
     this.stt = options.stt;
     this.tts = options.tts;
     this.autoExecuteTools = options.autoExecuteTools ?? true;
+    this.logger = options.logger ?? { info() {}, warn() {}, error() {}, debug() {} } as Logger;
   }
 
   /** Create a persistent conversation. Realtime execution is separate. */
@@ -62,6 +66,7 @@ export class Conversations {
     const record = await this.persistence.createConversation({
       agentNames: (options.agents ?? []).map((agent) => agent.name),
     });
+    this.logger.info("conversation created", { conversationId: record.id });
     return new Conversation({
       id: record.id,
       agents: options.agents,
@@ -69,6 +74,7 @@ export class Conversations {
       stt: this.stt,
       tts: this.tts,
       autoExecuteTools: options.autoExecuteTools ?? this.autoExecuteTools,
+      logger: this.logger,
       ...(options.maxConcurrentTtsRequests !== undefined
         ? { maxConcurrentTtsRequests: options.maxConcurrentTtsRequests }
         : {}),

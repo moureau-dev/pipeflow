@@ -10,11 +10,39 @@ export interface AgentOptions {
   name: string;
   /** Names a participant might use to address this agent. */
   aliases?: string[];
-  context?: string;
+  /**
+   * Static system context string, or a function that returns one (sync or
+   * async) each time the agent is invoked. The function receives the
+   * triggering prompt and any available conversation context.
+   */
+  context?: string | ContextFn;
   tools?: Tool<never, unknown>[];
   /** LLM provider used by `run()`. Injected by `Pipeflow.agent()`. */
   llm?: LLM;
 }
+
+export interface ContextParams {
+  /** The user prompt or turn text that triggered the generation. */
+  prompt: string;
+  /** Conversation id when running inside a conversation. */
+  conversationId?: string;
+  /** Current participants when inside a conversation. */
+  participants?: ReadonlyArray<{
+    userId: string;
+    aliases: readonly string[];
+  }>;
+  /** The turn that triggered this generation, when inside a conversation. */
+  turn?: {
+    id: string;
+    participantId: string;
+    participantName: string;
+    text: string;
+  };
+  /** The conversation's scoped annotations. Always present; empty when standalone. */
+  annotations: ReadonlyMap<string, string>;
+}
+
+export type ContextFn = (params: ContextParams) => string | Promise<string>;
 
 export interface AgentRunRequest {
   prompt: string;
@@ -44,18 +72,11 @@ export interface AgentRunResult {
   toolCalls: ExecutedToolCall[];
 }
 
-/**
- * An AI persona: a name, a system context, and a set of tools.
- *
- * An agent can participate in conversations or be invoked independently
- * with `run()`.
- */
 export class Agent {
   readonly name: string;
   readonly aliases: string[];
-  readonly context: string;
+  readonly context: string | ContextFn;
   private readonly toolRegistry = new Map<string, Tool<never, unknown>>();
-  /** LLM provider used by `run()` and the orchestrator. */
   readonly llm: LLM | undefined;
 
   constructor(options: AgentOptions) {
@@ -65,7 +86,9 @@ export class Agent {
     }
     this.name = name;
     this.aliases = [...(options.aliases ?? [])];
-    this.context = options.context?.trim() ?? "";
+    this.context = typeof options.context === "string"
+      ? options.context.trim()
+      : options.context ?? "";
     this.llm = options.llm;
     for (const tool of options.tools ?? []) {
       this.addTool(tool);
@@ -105,8 +128,12 @@ export class Agent {
     }
 
     const messages: LLMMessage[] = [];
-    if (this.context) {
-      messages.push({ role: "system", content: this.context });
+    const context = await this.resolveContext({
+      prompt: request.prompt,
+      annotations: new Map(),
+    });
+    if (context) {
+      messages.push({ role: "system", content: context });
     }
     if (request.history) {
       messages.push(...request.history);
@@ -136,8 +163,6 @@ export class Agent {
       }
 
       messages.push({ role: "assistant", content: text, toolCalls });
-      // Execute the batch concurrently: the model issued these calls
-      // together, so they are independent. Results keep call order.
       const executedBatch = await Promise.all(
         toolCalls.map((call) => this.executeToolCall(call)),
       );
@@ -221,5 +246,15 @@ export class Agent {
         result: { error: error instanceof Error ? error.message : String(error) },
       };
     }
+  }
+
+  /**
+   * Resolve the agent's system context: return the static string or call the
+   * function with the given params and return its result.
+   */
+  resolveContext(params: ContextParams): string | Promise<string> {
+    return typeof this.context === "function"
+      ? this.context(params)
+      : this.context;
   }
 }

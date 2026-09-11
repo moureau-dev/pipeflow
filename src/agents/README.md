@@ -27,6 +27,27 @@ const jarvis = pipeflow.agent({
   message history and executed tool calls. Tool calls the model requests
   together execute concurrently.
 
+## Dynamic context
+
+`context` accepts either a static string or a `ContextFn`:
+
+```ts
+// Static
+pipeflow.agent({ name: "Jarvis", context: "You are helpful." });
+
+// Dynamic — called per generation with the turn and app state
+pipeflow.agent({
+  name: "DocBot",
+  context: ({ prompt, annotations }) =>
+    `Current file: ${annotations.get("currentFile") ?? "none"}. ` +
+    `Help with: "${prompt}"`,
+});
+```
+
+`ContextFn` receives `ContextParams`: `prompt`, `conversationId`,
+`participants`, `turn`, and `annotations` (always present, empty when
+standalone). Sync or async.
+
 ## Agents vs coordinations
 
 An agent performs a task. A coordination (see

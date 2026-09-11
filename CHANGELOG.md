@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Per-generation context via `ContextFn`** — `Agent.context` now accepts a function `(params: ContextParams) => string | Promise<string>` in addition to a static string. Called each time the agent is invoked with the triggering prompt and available conversation context (`conversationId`, `participants`, `turn`, `annotations`). Works in `Agent.run()`, direct conversation generations, and delegated sub-generations. `ContextFn` and `ContextParams` exported from `@moureau/pipeflow`.
+- **Conversation annotations** — `conversation.annotations` (`Annotations` instance) is a scoped key-value store for ephemeral app state. Values are rendered as system messages before every generation. API: `.set(key, value)`, `.set({...})`, `.delete(key)`, `.clear()`, `.entries` (live `ReadonlyMap`), `.size`. Accessible from `ContextFn` via `params.annotations`. Exported from `@moureau/pipeflow`.
+
 ## [0.0.4] - 2026-09-10
 
 ### Added

@@ -610,8 +610,22 @@ export class CoordinationRunner {
     }));
 
     const messages: LLMMessage[] = [];
-    if (agent.context) {
-      messages.push({ role: "system", name: agent.name, content: agent.context });
+    const context = await agent.resolveContext({
+      prompt: task.prompt,
+      conversationId: this.conversation.id,
+      participants: this.conversation.participants,
+      annotations: this.conversation.annotations.entries,
+    });
+    if (context) {
+      messages.push({ role: "system", name: agent.name, content: context });
+    }
+    if (this.conversation.annotations.size > 0) {
+      const lines = [...this.conversation.annotations.entries]
+        .map(([k, v]) => `${k}: ${v}`);
+      messages.push({
+        role: "system",
+        content: `Conversation annotations:\n${lines.join("\n")}`,
+      });
     }
     messages.push(...this.history.windowed(this.historyWindow));
     // The prompt carries a time stamp so time-sensitive tasks (flights,

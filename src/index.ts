@@ -10,12 +10,15 @@ export type {
   AgentOptions,
   AgentRunRequest,
   AgentRunResult,
+  ContextFn,
+  ContextParams,
   ExecutedToolCall,
 } from "./agents/agent";
 export { Tool, Tool as PipeflowTool } from "./agents/tools/tools";
 export type { ToolOptions } from "./agents/tools/tools";
 
 export {
+  Annotations,
   Conversation,
   Conversations,
   Transcription,

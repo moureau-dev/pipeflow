@@ -3,6 +3,8 @@ export type {
   AgentOptions,
   AgentRunRequest,
   AgentRunResult,
+  ContextFn,
+  ContextParams,
   ExecutedToolCall,
 } from "./agent";
 export { Tool, Tool as PipeflowTool } from "./tools/tools";

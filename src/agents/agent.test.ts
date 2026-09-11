@@ -314,4 +314,98 @@ describe("Agent", () => {
       { role: "user", content: "q2" },
     ]);
   });
+
+  describe("context as ContextFn", () => {
+    test("sync function is called with the prompt", async () => {
+      const llm = new FakeLLM(() => done());
+      const agent = new Agent({
+        name: "Jarvis",
+        context: ({ prompt }) => `You are helping with: ${prompt}`,
+        llm,
+      });
+
+      await agent.run({ prompt: "explain gravity" });
+
+      expect(llm.requests[0]!.messages[0]).toEqual({
+        role: "system",
+        content: "You are helping with: explain gravity",
+      });
+    });
+
+    test("async function is awaited", async () => {
+      const llm = new FakeLLM(() => done());
+      const agent = new Agent({
+        name: "Jarvis",
+        context: async ({ prompt }) => {
+          await Bun.sleep(10);
+          return `Async context for: ${prompt}`;
+        },
+        llm,
+      });
+
+      await agent.run({ prompt: "async test" });
+
+      expect(llm.requests[0]!.messages[0]).toEqual({
+        role: "system",
+        content: "Async context for: async test",
+      });
+    });
+
+    test("undefined returns no system message", async () => {
+      const llm = new FakeLLM(() => done());
+      const agent = new Agent({
+        name: "Jarvis",
+        context: () => "",
+        llm,
+      });
+
+      await agent.run({ prompt: "hi" });
+
+      // No system message when context resolves to empty string
+      expect(llm.requests[0]!.messages[0]?.role).toBe("user");
+    });
+
+    test("static string still works", async () => {
+      const llm = new FakeLLM(() => done());
+      const agent = new Agent({
+        name: "Jarvis",
+        context: "Static context.",
+        llm,
+      });
+
+      await agent.run({ prompt: "hi" });
+
+      expect(llm.requests[0]!.messages[0]).toEqual({
+        role: "system",
+        content: "Static context.",
+      });
+    });
+
+    test("resolveContext returns string directly from static context", () => {
+      const agent = new Agent({ name: "J", context: "hello" });
+      const result = agent.resolveContext({ prompt: "x", annotations: new Map() });
+      expect(result).toBe("hello");
+    });
+
+    test("resolveContext calls the function with prompt", () => {
+      const agent = new Agent({
+        name: "J",
+        context: ({ prompt }) => `ctx: ${prompt}`,
+      });
+      const result = agent.resolveContext({ prompt: "test", annotations: new Map() });
+      expect(result).toBe("ctx: test");
+    });
+
+    test("resolveContext passes annotations to the function", () => {
+      const agent = new Agent({
+        name: "J",
+        context: ({ annotations }) => `mode: ${annotations.get("mode") ?? "none"}`,
+      });
+      const result = agent.resolveContext({
+        prompt: "x",
+        annotations: new Map([["mode", "review"]]),
+      });
+      expect(result).toBe("mode: review");
+    });
+  });
 });

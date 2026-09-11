@@ -1,3 +1,4 @@
+export { Annotations } from "./annotations";
 export { Conversation } from "./conversation";
 export type {
   ConversationEvents,

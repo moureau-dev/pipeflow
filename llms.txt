@@ -252,6 +252,52 @@ const jarvis = pipeflow.agent({
 });
 ```
 
+`context` accepts either a static string or a `ContextFn` — a function called
+each time the agent generates a response. The function receives the triggering
+prompt and any available conversation context and may return a string or a
+promise:
+
+```ts
+pipeflow.agent({
+  name: "DocBot",
+  context: ({ prompt, conversationId, participants, annotations }) =>
+    `You are helping in conversation ${conversationId ?? "standalone"}. ` +
+    `The user said: "${prompt}".`,
+});
+
+// Async variant:
+pipeflow.agent({
+  name: "AsyncBot",
+  context: async ({ prompt, annotations }) => {
+    const config = await loadConfig();
+    return `Context: ${config.mode}. Prompt: ${prompt}`;
+  },
+});
+```
+
+Dynamic app state can be injected mid-conversation via
+`conversation.annotations` (an `Annotations` instance). Values are rendered
+as system messages before every generation:
+
+```ts
+// When the user navigates to a file:
+conversation.annotations.set("currentFile", "src/app.ts");
+conversation.annotations.set({ userRole: "admin", mode: "review" });
+
+// Remove when no longer relevant:
+conversation.annotations.delete("currentFile");
+conversation.annotations.clear();
+
+// In ContextFn:
+context: ({ prompt, annotations }) => {
+  const file = annotations.get("currentFile") ?? "unknown";
+  return `You are reviewing ${file}. User: "${prompt}"`;
+}
+```
+
+The `ContextFn` type and `ContextParams` interface are exported from
+`@moureau/pipeflow`:
+
 Agents can also be run independently of conversations:
 
 ```ts
@@ -516,7 +562,7 @@ Everything happens as a stream — Pipeflow does not wait for a complete recordi
 
 | Import path | Exports |
 |---|---|
-| `@moureau/pipeflow` | Core: `Pipeflow`, `PipeflowTool`, `Agent`, `ConsoleLogger`, `SilentLogger`, Logger types |
+| `@moureau/pipeflow` | Core: `Pipeflow`, `PipeflowTool`, `Agent`, `ConsoleLogger`, `SilentLogger`, `ContextFn`, `ContextParams`, `Annotations`, Logger types |
 | `@moureau/pipeflow/client` | Browser/Node client: `PipeflowClient`, `WebSocketProtocol`, `Protocol` |
 | `@moureau/pipeflow/providers` | All provider adapters |
 | `@moureau/pipeflow/persistence` | Persistence adapters (`SQLitePersistence`, `MemoryPersistence`) |

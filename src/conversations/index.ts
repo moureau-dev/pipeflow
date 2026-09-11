@@ -15,7 +15,7 @@ export type {
   UserId,
 } from "./types";
 export { createConversationState } from "./types";
-export { Conversation } from "./conversation/index";
+export { Annotations, Conversation } from "./conversation/index";
 export type {
   ConversationEvents,
   ConversationOptions,

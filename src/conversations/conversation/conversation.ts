@@ -24,6 +24,7 @@ import {
 } from "../transcription/transcription";
 import type { ToolCall, ToolCallResult } from "../types";
 import type { Logger } from "../../logger/types";
+import { Annotations } from "./annotations";
 
 /** Ensure a generation carries a timing record, initialized from its start. */
 function initTiming(generation: Generation): GenerationTiming {
@@ -164,6 +165,7 @@ export class Conversation {
   readonly transcription: Transcription;
   readonly state: ConversationState;
   readonly logger: Logger;
+  readonly annotations = new Annotations();
   private readonly persistence: Persistence | undefined;
   private readonly stt: STT | undefined;
   private readonly tts: TTS | undefined;

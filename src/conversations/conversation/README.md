@@ -94,4 +94,20 @@ Without a `sequence`, the chunk is emitted on arrival, exactly as before.
 The emitted `audio-in` events keep their own conversation-level sequence,
 renumbered in release order, so they are always increasing.
 
+## Annotations
+
+A scoped key-value store for ephemeral app state that changes without a
+new user message — file navigation, role changes, mode toggles.
+
+```ts
+conversation.annotations.set("currentFile", "src/app.ts");
+conversation.annotations.set({ userRole: "admin", mode: "review" });
+conversation.annotations.delete("currentFile");
+conversation.annotations.clear();
+```
+
+Annotations are rendered as system messages before every generation.
+Agent `ContextFn` receives them via `params.annotations` (always present,
+empty when standalone).
+
 See the root [README](../../../README.md) for the public API.

@@ -5,7 +5,7 @@
 // specifiers (required for Node ESM and node16/nodenext type resolution).
 import { build } from "esbuild";
 import { execSync } from "node:child_process";
-import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Glob } from "bun";
@@ -74,6 +74,12 @@ function fixRelativeSpecifiers(dir) {
       const updated = original.replace(specifierPattern, (match, prefix, specifier, quote) => {
         // Leave specifiers that already carry an extension untouched.
         if (/\.(js|ts|mjs|cjs)$/.test(specifier)) return match;
+        // Check if the specifier resolves to a directory (i.e. the module is
+        // an index file) so we emit `/index.js` instead of `.js`.
+        const resolved = join(dir, specifier);
+        if (existsSync(resolved) && statSync(resolved).isDirectory()) {
+          return `${prefix}${specifier}/index.js${quote}`;
+        }
         return `${prefix}${specifier}.js${quote}`;
       });
       if (updated !== original) {

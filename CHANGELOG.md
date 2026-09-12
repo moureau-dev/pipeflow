@@ -5,14 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Build emits valid relative specifiers for directory-based modules** —
+  `fixRelativeSpecifiers` in the build script previously appended `.js` to
+  every extensionless relative import, even when the import resolved to a
+  directory (e.g. `./pipeflow` → `./pipeflow.js`), but the actual emitted
+  file was `./pipeflow/index.js`. The specifier now checks whether the target
+  is a directory and emits `/index.js` instead. Fixes resolution failures for
+  `@moureau/pipeflow` when installed from npm.
+
 ## [0.0.6] - 2026-09-11
 
 ### Added
 
 - **Per-generation context via `ContextFn`** — `Agent.context` now accepts a function `(params: ContextParams) => string | Promise<string>` in addition to a static string. Called each time the agent is invoked with the triggering prompt and available conversation context (`conversationId`, `participants`, `turn`, `annotations`). Works in `Agent.run()`, direct conversation generations, and delegated sub-generations. `ContextFn` and `ContextParams` exported from `@moureau/pipeflow`.
 - **Conversation annotations** — `conversation.annotations` (`Annotations` instance) is a scoped key-value store for ephemeral app state. Values are rendered as system messages before every generation. API: `.set(key, value)`, `.set({...})`, `.delete(key)`, `.clear()`, `.entries` (live `ReadonlyMap`), `.size`. Accessible from `ContextFn` via `params.annotations`. Exported from `@moureau/pipeflow`.
-
-## [Unreleased]
 
 ## [0.0.4] - 2026-09-10
 
@@ -89,8 +99,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   specialist output now streams through `agent-delta` instead of `text-delta`,
   so the top-level reply object (coalesced by `ConversationStream`) is not
   fragmented by intermediary agent narration.
-
-## [Unreleased]
 
 ## [0.0.3] - 2026-09-07
 

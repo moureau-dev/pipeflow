@@ -39,7 +39,15 @@ conversations/
 
 - `pipeflow.conversations.create({ agents })` → `Conversation`
 - `pipeflow.conversations.transcript(id)` → `TranscriptEntry[]`
-- `pipeflow.conversations.get(id)` → `Conversation | null`
+- `pipeflow.conversations.get(id, options?)` → `Conversation | null`
+
+The orchestrator options `coordinations` and `retryDirectAnswer` are accepted by
+`create()` (`CreateConversationOptions`). Agent instances and per-conversation
+tuning are not persisted, so a restored handle has no roster and uses default
+tuning until you pass `RestoreConversationOptions` (`agents`, `coordinations`,
+`retryDirectAnswer`, `maxConcurrentTtsRequests`, `audioReorderMs`). Provider,
+logger, and tool-execution wiring is instance-level and is inherited from the
+`Conversations` instance.
 
 Subpath exports (`@moureau/pipeflow/conversations` and
 `@moureau/pipeflow/conversations/*`) expose `Conversation`, `Conversations`,

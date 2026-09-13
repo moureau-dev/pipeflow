@@ -137,11 +137,17 @@ create()       // creates the persistent conversation
 Conversations are created through `pipeflow.conversations`:
 
 ```ts
-// Create
+// Create (options: agents, createdBy, autoExecuteTools,
+//          maxConcurrentTtsRequests, audioReorderMs, coordinations,
+//          retryDirectAnswer)
 const conversation = await pipeflow.conversations.create({ agents: [jarvis] });
 
-// Retrieve by id
-const conv = await pipeflow.conversations.get(id);
+// Retrieve by id. Agent instances and per-conversation tuning are not
+// persisted, so pass them back to restore them (options: agents,
+// coordinations, retryDirectAnswer, maxConcurrentTtsRequests,
+// audioReorderMs). stt, tts, logger, and the autoExecuteTools default are
+// inherited from the Conversations instance.
+const conv = await pipeflow.conversations.get(id, { agents: [jarvis] });
 
 // List with filters, ordering, and pagination
 const { conversations, total } = await pipeflow.conversations.list({
@@ -342,8 +348,10 @@ resumes on the next turn — participant speech during a clarify wait is
 treated as the answer, not as barge-in. Plans can be observed via `plan` and
 `plan-step` events; specialist progress streams via `agent-delta`.
 
-Available as `retryDirectAnswer` (on `Conversation.create()` / `Pipeflow`)
-to retry once when multi-agent answers directly without planning.
+Available as `retryDirectAnswer` (on `pipeflow.conversations.create()`,
+`Conversation`, or `Pipeflow`) to retry once when multi-agent answers directly
+without planning. Extra coordinations are registered on the same call via the
+`coordinations` option.
 
 ---
 

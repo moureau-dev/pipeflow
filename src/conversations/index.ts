@@ -21,7 +21,7 @@ export type {
   ConversationOptions,
 } from "./conversation/index";
 export { Conversations } from "./conversations";
-export type { CreateConversationOptions } from "./conversations";
+export type { CreateConversationOptions, RestoreConversationOptions } from "./conversations";
 export type { ConversationFilters, ConversationListResult, ConversationRecord } from "../persistence/persistence";
 export { Orchestrator } from "./orchestration/orchestrator/index";
 export type { OrchestratorOptions } from "./orchestration/orchestrator/index";

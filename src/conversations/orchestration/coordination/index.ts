@@ -3,8 +3,10 @@ export {
   CoordinationSuspension,
   CoordinationCancelled,
   CoordinationBudgetExceeded,
+  buildClarifyPrompt,
   delegateToolDefinition,
   parseDelegateAction,
+  renderClarifyQuestion,
 } from "./coordination";
 export type {
   CoordinationOptions,

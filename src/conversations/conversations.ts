@@ -5,6 +5,7 @@ import type { TTS } from "../providers/tts/types";
 import type { ConversationId } from "./types";
 import type { TranscriptEntry } from "./transcription/transcription";
 import { Conversation } from "./conversation/conversation";
+import type { CoordinationRegistration } from "./orchestration/coordination/coordination";
 import type { Logger } from "../logger/types";
 
 export interface CreateConversationOptions {
@@ -28,7 +29,37 @@ export interface CreateConversationOptions {
    * `ConversationOptions.audioReorderMs`.
    */
   audioReorderMs?: number;
+  /**
+   * Additional coordinations the orchestrator can delegate to, registered by
+   * name. See `OrchestratorOptions.coordinations`.
+   */
+  coordinations?: Record<string, CoordinationRegistration>;
+  /**
+   * Retry a direct (unplanned) multi-agent answer once (default `false`). See
+   * `OrchestratorOptions.retryDirectAnswer`.
+   */
+  retryDirectAnswer?: boolean;
 }
+
+/**
+ * Runtime wiring supplied when rehydrating an existing conversation with
+ * `Conversations.get()`. Agent instances and coordinations are not persisted
+ * (only agent NAMES are), so a restored handle carries none of them unless the
+ * caller passes them back in. Without agents the handle cannot route a
+ * `send()` turn at all.
+ *
+ * Provider, logger, and tool-execution wiring is instance-level, so `get()`
+ * inherits it from the `Conversations` instance and it is not part of this
+ * type.
+ */
+export type RestoreConversationOptions = Pick<
+  CreateConversationOptions,
+  | "agents"
+  | "coordinations"
+  | "retryDirectAnswer"
+  | "maxConcurrentTtsRequests"
+  | "audioReorderMs"
+>;
 
 export interface ConversationsOptions {
   persistence: Persistence;
@@ -83,6 +114,12 @@ export class Conversations {
       ...(options.audioReorderMs !== undefined
         ? { audioReorderMs: options.audioReorderMs }
         : {}),
+      ...(options.coordinations !== undefined
+        ? { coordinations: options.coordinations }
+        : {}),
+      ...(options.retryDirectAnswer !== undefined
+        ? { retryDirectAnswer: options.retryDirectAnswer }
+        : {}),
     });
   }
 
@@ -92,11 +129,40 @@ export class Conversations {
     return this.persistence.listTranscript(id);
   }
 
-  /** Rehydrate a runtime handle for an existing conversation. */
-  async get(id: ConversationId): Promise<Conversation | null> {
+  /**
+   * Rehydrate a runtime handle for an existing conversation. Pass
+   * `RestoreConversationOptions` to restore the agent roster and coordinations.
+   * Without them the handle has no agents and cannot route a `send()` turn.
+   * Instance-level wiring (`stt`, `tts`, `autoExecuteTools`, `logger`) is
+   * inherited from this `Conversations` instance.
+   */
+  async get(
+    id: ConversationId,
+    options: RestoreConversationOptions = {},
+  ): Promise<Conversation | null> {
     const record = await this.persistence.getConversation(id);
     if (!record) return null;
-    return new Conversation({ id: record.id, persistence: this.persistence });
+    return new Conversation({
+      id: record.id,
+      persistence: this.persistence,
+      stt: this.stt,
+      tts: this.tts,
+      autoExecuteTools: this.autoExecuteTools,
+      logger: this.logger,
+      ...(options.agents !== undefined ? { agents: options.agents } : {}),
+      ...(options.coordinations !== undefined
+        ? { coordinations: options.coordinations }
+        : {}),
+      ...(options.retryDirectAnswer !== undefined
+        ? { retryDirectAnswer: options.retryDirectAnswer }
+        : {}),
+      ...(options.maxConcurrentTtsRequests !== undefined
+        ? { maxConcurrentTtsRequests: options.maxConcurrentTtsRequests }
+        : {}),
+      ...(options.audioReorderMs !== undefined
+        ? { audioReorderMs: options.audioReorderMs }
+        : {}),
+    });
   }
 
   /**

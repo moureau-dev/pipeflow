@@ -408,4 +408,169 @@ describe("Conversations", () => {
       "Jarvis: Got it!",
     ]);
   });
+
+  // -------------------------------------------------------------------------
+  // Option plumbing: coordinations / retryDirectAnswer / restored roster.
+  // Regression guard for the gap where conversations.create() silently dropped
+  // these, so orchestrator-level coordinations were unreachable from the API.
+  // -------------------------------------------------------------------------
+
+  test("create forwards coordinations to the orchestrator", async () => {
+    const persistence = new MemoryPersistence();
+    const api = new Conversations({ persistence });
+
+    const coordinationLlm = new FakeLLM(async function* () {
+      yield { type: "delta", content: "The flight departs at 3pm." };
+      yield { type: "done" };
+    });
+    const coordinatorLlm = new FakeLLM(async function* (request) {
+      if (request.messages.at(-1)?.role === "tool") {
+        yield { type: "delta", content: "All set." };
+        yield { type: "done" };
+        return;
+      }
+      yield {
+        type: "tool_call",
+        id: "call_1",
+        name: "delegate",
+        arguments: JSON.stringify({
+          action: "coordination",
+          coordination: "resolve-details",
+          input: { prompt: "Find the flight details." },
+        }),
+      };
+      yield { type: "done" };
+    });
+
+    const coordinator = new Agent({ name: "Jarvis", llm: coordinatorLlm });
+    const helper = new Agent({ name: "Helper", llm: new FakeLLM() });
+    const conversation = await api.create({
+      agents: [coordinator, helper],
+      coordinations: {
+        "resolve-details": { prompt: "You resolve details.", llm: coordinationLlm },
+      },
+    });
+
+    await conversation.start();
+    await conversation.participate({ userId: "alice" });
+    conversation.send({ userId: "alice", text: "Book my flight." });
+
+    // The delegation only resolves if the registration reached the orchestrator.
+    await waitFor(() => coordinationLlm.requests.length >= 1);
+    expect(coordinationLlm.requests[0]!.messages[0]).toEqual({
+      role: "system",
+      name: "resolve-details",
+      content: "You resolve details.",
+    });
+  });
+
+  test("create forwards retryDirectAnswer to the orchestrator", async () => {
+    const persistence = new MemoryPersistence();
+    const api = new Conversations({ persistence });
+
+    // Answers directly (never delegates), so the multi-agent safety net is the
+    // only thing that can produce a second coordinator call.
+    const coordinatorLlm = new FakeLLM(async function* () {
+      yield { type: "delta", content: "Direct answer." };
+      yield { type: "done" };
+    });
+    const coordinator = new Agent({ name: "Jarvis", llm: coordinatorLlm });
+    const helper = new Agent({ name: "Helper", llm: new FakeLLM() });
+    const conversation = await api.create({
+      agents: [coordinator, helper],
+      retryDirectAnswer: true,
+    });
+
+    await conversation.start();
+    await conversation.participate({ userId: "alice" });
+    conversation.send({ userId: "alice", text: "Hello." });
+
+    await waitFor(() => coordinatorLlm.requests.length >= 2);
+    expect(coordinatorLlm.requests.length).toBe(2);
+  });
+
+  test("get rehydrates the agent roster when options are passed", async () => {
+    const persistence = new MemoryPersistence();
+    const api = new Conversations({ persistence });
+    const jarvis = new Agent({ name: "Jarvis" });
+    const created = await api.create({ agents: [jarvis] });
+
+    // Without options a restored handle has no roster (cannot route a turn)...
+    expect((await api.get(created.id))?.agents).toHaveLength(0);
+    // ...and with them the roster comes back.
+    const restored = await api.get(created.id, { agents: [jarvis] });
+    expect(restored?.agents).toHaveLength(1);
+  });
+
+  test("get inherits instance STT/TTS when restoring a conversation", async () => {
+    const persistence = new MemoryPersistence();
+    const stt = new FakeSTT();
+    const tts = new FakeTTS();
+    const llm = new FakeLLM();
+    const jarvis = new Agent({ name: "Jarvis", context: "Be concise.", llm });
+    const api = new Conversations({ persistence, stt, tts });
+    const created = await api.create({ agents: [jarvis] });
+
+    const restored = (await api.get(created.id, { agents: [jarvis] }))!;
+    await restored.participate({ userId: "alice", aliases: ["al"] });
+    await restored.start();
+
+    restored.listen({ userId: "alice", audio: new Uint8Array([1]) });
+    expect(stt.sessions).toHaveLength(1);
+    stt.sessions[0]!.emitFinal("Hello there.");
+    await waitFor(() => llm.requests.length >= 1);
+    await waitFor(async () => (await api.transcript(created.id)).length >= 2);
+
+    // Audio reached the instance STT and the reply was synthesized by the
+    // instance TTS. Neither provider is persisted.
+    expect(tts.requests.map((request) => request.text)).toEqual(["Got it!"]);
+  });
+
+  test("get inherits the instance autoExecuteTools setting", async () => {
+    const persistence = new MemoryPersistence();
+    const executed: string[] = [];
+    const getWeather = new Tool<{ city: string }, string>({
+      name: "get_weather",
+      description: "Get the weather for a city.",
+      execute: ({ city }) => {
+        executed.push(city);
+        return `sunny in ${city}`;
+      },
+    });
+    const llm = new FakeLLM(async function* (request) {
+      if (request.messages.at(-1)?.role === "tool") {
+        yield { type: "delta", content: "It is sunny in Paris." };
+        yield { type: "done" };
+        return;
+      }
+      yield { type: "delta", content: "Let me check. " };
+      yield {
+        type: "tool_call",
+        id: "call_1",
+        name: "get_weather",
+        arguments: '{"city":"Paris"}',
+      };
+      yield { type: "done" };
+    });
+    const jarvis = new Agent({ name: "Jarvis", llm, tools: [getWeather] });
+
+    // App-managed tools: the orchestrator surfaces the call and waits instead
+    // of running it. A restored handle must not flip this back to auto-execute.
+    const api = new Conversations({ persistence, autoExecuteTools: false });
+    const created = await api.create({ agents: [jarvis] });
+
+    const restored = (await api.get(created.id, { agents: [jarvis] }))!;
+    const toolCalls: string[] = [];
+    restored.on("tool-call", (payload) => toolCalls.push(payload.call.name));
+    await restored.participate({ userId: "alice" });
+    await restored.start();
+    restored.send({ userId: "alice", text: "What is the weather in Paris?" });
+
+    await waitFor(() => toolCalls.length >= 1);
+    // An auto-executing orchestrator would have run the tool by now.
+    await Bun.sleep(25);
+    expect(toolCalls).toEqual(["get_weather"]);
+    expect(executed).toEqual([]);
+    expect(llm.requests).toHaveLength(1);
+  });
 });

@@ -15,7 +15,10 @@ import type {
   Turn,
   UserId,
 } from "../types";
-import type { PlanStep } from "../orchestration/coordination/coordination";
+import type {
+  CoordinationRegistration,
+  PlanStep,
+} from "../orchestration/coordination/coordination";
 import { createConversationState } from "../types";
 import {
   Transcription,
@@ -75,6 +78,17 @@ export interface ConversationOptions {
    * emitted immediately, with no added latency.
    */
   audioReorderMs?: number;
+  /**
+   * Additional coordinations the orchestrator can delegate to, registered by
+   * name. Passed through to `OrchestratorOptions.coordinations`, the app-level
+   * hook for `clarify`, custom capture flows, and the like.
+   */
+  coordinations?: Record<string, CoordinationRegistration>;
+  /**
+   * Retry a direct (unplanned) multi-agent answer once. See
+   * `OrchestratorOptions.retryDirectAnswer`.
+   */
+  retryDirectAnswer?: boolean;
 }
 
 /** Per-participant reorder state for sequenced audio (`listen({ sequence })`). */
@@ -179,6 +193,8 @@ export class Conversation {
   private readonly subGenerations = new Map<string, Generation>();
   private readonly audioReorderMs: number;
   private readonly audioReorder = new Map<UserId, AudioReorderState>();
+  private readonly coordinations: Record<string, CoordinationRegistration> | undefined;
+  private readonly retryDirectAnswer: boolean | undefined;
   private nextAudioSequence = 0;
 
   constructor(options: ConversationOptions) {
@@ -190,6 +206,8 @@ export class Conversation {
     this.autoExecuteTools = options.autoExecuteTools ?? true;
     this.maxConcurrentTtsRequests = options.maxConcurrentTtsRequests;
     this.audioReorderMs = options.audioReorderMs ?? 100;
+    this.coordinations = options.coordinations;
+    this.retryDirectAnswer = options.retryDirectAnswer;
     this.transcription = new Transcription(this.id);
     this.state = createConversationState();
     this.logger = options.logger ?? { info() {}, warn() {}, error() {}, debug() {} } as Logger;
@@ -643,6 +661,12 @@ export class Conversation {
           autoExecuteTools: this.autoExecuteTools,
           ...(this.maxConcurrentTtsRequests !== undefined
             ? { maxConcurrentTtsRequests: this.maxConcurrentTtsRequests }
+            : {}),
+          ...(this.coordinations !== undefined
+            ? { coordinations: this.coordinations }
+            : {}),
+          ...(this.retryDirectAnswer !== undefined
+            ? { retryDirectAnswer: this.retryDirectAnswer }
             : {}),
         })
       : new Orchestrator(common);

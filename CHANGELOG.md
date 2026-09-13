@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`coordinations` and `retryDirectAnswer` on the Conversations API** —
+  `pipeflow.conversations.create()` now accepts both options and forwards them
+  to the orchestrator.
+- **`RestoreConversationOptions` for rehydrating a conversation** —
+  `pipeflow.conversations.get(id, options)` accepts `agents`, `coordinations`,
+  `retryDirectAnswer`, `maxConcurrentTtsRequests`, and `audioReorderMs`. Agent
+  instances and per-conversation tuning are not persisted, so a restored handle
+  carries none of them unless they are passed back in. Provider, logger, and
+  tool-execution wiring is instance-level and is inherited from the
+  `Conversations` instance.
+- **`buildClarifyPrompt` and `renderClarifyQuestion` exported** — both are
+  documented for registering a `clarify` coordination but were unreachable from
+  the published subpaths. They now ship from
+  `@moureau/pipeflow/conversations/orchestration/coordination`.
+
+### Fixed
+
+- **`Conversations.create()` dropped orchestrator options** — `coordinations`
+  and `retryDirectAnswer` were accepted by `Conversation` and documented as
+  available through the API, but the `Conversations` layer discarded them, so
+  orchestrator-level coordinations were unreachable from
+  `pipeflow.conversations.create()`.
+- **`Conversations.get()` returned a handle without the instance wiring** — a
+  restored handle lost `stt`, `tts`, and `logger`, and fell back to
+  `autoExecuteTools: true` even when the instance was configured with
+  `false`. Voice restore had no audio intake, and tool calls could be
+  auto-executed behind the application's back.
+
 ## [0.0.7] - 2026-09-12
 
 ### Fixed

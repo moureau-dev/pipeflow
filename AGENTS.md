@@ -108,5 +108,20 @@ Update transport README after removing single-conversation server
    the new version section in `CHANGELOG.md`
 2. Commit the version bump: `git commit -m "Release v<VERSION>"`
 3. Push: `git push origin main`
-4. Create a GitHub release with `gh`:
+4. Verify the release: run
+   `bunx concurrently "bun run test:unit" "bun run build"`, then `npm pack` to
+   confirm what the tarball will contain. Delete the generated `.tgz`
+   afterwards.
+5. Create a GitHub release with `gh`:
    `gh release create v<VERSION> --title "v<VERSION>" --notes "<changelog content for that version>"`
+6. Watch the triggered run until it completes: list it with
+   `gh run list --workflow publish.yml --limit 1`, then poll it with
+   `gh run watch <run-id> --exit-status` (exits non-zero if the run failed).
+
+Publishing the GitHub release triggers `.github/workflows/publish.yml`, which
+checks out the tag, builds, runs `bun run test --bail`, and runs
+`npm publish --access public`. There is no separate npm step.
+
+npm propagation lags the workflow by a few minutes, so
+`npm view @moureau/pipeflow@<VERSION>` can 404 while the run already shows
+success. Wait and re-check rather than publishing by hand.
